@@ -18,6 +18,9 @@
  *     Since the real flag [0xAE319C] is now always 1 (it also selects the present path at
  *     0x5E2F8D and must stay 1), the getter is redirected to the mode the player chose.
  *
+ * It also subclasses the game window to turn cnc-ddraw's maximize toggle (largest 4:3 window <->
+ * native 800x600) into a normal Windows maximize/restore; see "maximize / restore" below.
+ *
  * Safety: the hooks are installed only if the bytes at 0x5E2620/0x5E2EA0 match 3.9.68 and the ddraw.dll
  * loaded next to the game is cnc-ddraw (exports GameHandlesClose). Otherwise this DLL only
  * forwards DirectSoundCreate. Log: cmfix.log next to the DLL.
@@ -118,6 +121,256 @@ static int toggle(HWND h)
     return 1;
 }
 
+/* ---------------------------------------------------------------- maximize / restore */
+/*
+ * cnc-ddraw's own "maximize" (caption button, title double-click, Alt+PgDn) toggles between the
+ * largest 4:3 window in the work area and the native 800x600. Instead we make it a real Windows
+ * maximized window (caption kept, picture 4:3 centred) and restore the size the window had before.
+ *
+ * cnc-ddraw renders at the size stored in its window_rect, which only its own code updates: a
+ * SetWindowPos/ShowWindow from outside resizes the window but not the picture (and the mouse
+ * mapping), so the frame sticks to the corner and clicks miss. Mouse resizing works because of
+ * the modal size loop: WM_ENTERSIZEMOVE, WM_SIZING (stops the render thread and stores the new
+ * client rect) and WM_EXITSIZEMOVE (re-applies the display mode with that rect). We replay that
+ * sequence on the window thread from a subclass that sits in front of cnc-ddraw's window proc.
+ *
+ * cnc-ddraw hooks the IAT of every module in the game folder (this DLL too): from here
+ * SetWindowPos, ShowWindow(SW_MAXIMIZE), Get/SetWindowLongA, GetClientRect... are its fakes.
+ * The real user32 functions are looked up in user32's export table directly.
+ * dd_SetDisplayMode clears WS_MAXIMIZE whenever it runs, so the bit is put back afterwards
+ * (also after Alt+Enter / an in-game mode switch returns to the window while "maximized").
+ */
+#define WM_CNC_TOGGLE_MAXIMIZE (WM_APP + 118)  /* cnc-ddraw: Alt+PgDn hotkey */
+#define WM_CMFIX_REMAX         (WM_APP + 201)
+
+typedef LONG(WINAPI *GetWindowLongAFn)(HWND, int);
+typedef LONG(WINAPI *SetWindowLongAFn)(HWND, int, LONG);
+typedef BOOL(WINAPI *SetWindowPosFn)(HWND, HWND, int, int, int, int, UINT);
+typedef BOOL(WINAPI *ShowWindowFn)(HWND, int);
+typedef BOOL(WINAPI *GetRectFn)(HWND, LPRECT);
+typedef BOOL(WINAPI *ClientToScreenFn)(HWND, LPPOINT);
+
+static GetWindowLongAFn  r_GetWindowLongA;
+static SetWindowLongAFn  r_SetWindowLongA;
+static SetWindowPosFn    r_SetWindowPos;
+static ShowWindowFn      r_ShowWindow;
+static GetRectFn         r_GetClientRect, r_GetWindowRect;
+static ClientToScreenFn  r_ClientToScreen;
+
+static WNDPROC g_prev_proc;        /* cnc-ddraw's window proc */
+static int g_subclass_ok;
+static int g_maxed;                /* the player maximized the window */
+static int g_busy;                 /* inside our own resize sequence */
+static int g_remax_posted;
+static DWORD g_remax_tick;
+static RECT g_normal;              /* client rect (screen coords) before maximizing */
+
+static FARPROC export_of(HMODULE mod, const char *name)
+{
+    BYTE *b = (BYTE *)mod;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(b + ((IMAGE_DOS_HEADER *)b)->e_lfanew);
+    IMAGE_DATA_DIRECTORY *dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    IMAGE_EXPORT_DIRECTORY *ex = (IMAGE_EXPORT_DIRECTORY *)(b + dd->VirtualAddress);
+    DWORD *names = (DWORD *)(b + ex->AddressOfNames), *funcs = (DWORD *)(b + ex->AddressOfFunctions);
+    WORD *ords = (WORD *)(b + ex->AddressOfNameOrdinals);
+    DWORD i;
+    for (i = 0; i < ex->NumberOfNames; i++) {
+        if (!strcmp((char *)(b + names[i]), name)) {
+            DWORD rva = funcs[ords[i]];
+            if (rva >= dd->VirtualAddress && rva < dd->VirtualAddress + dd->Size)
+                return NULL;               /* forwarder: not expected for these */
+            return (FARPROC)(b + rva);
+        }
+    }
+    return NULL;
+}
+
+static int resolve_user32(void)
+{
+    HMODULE u = GetModuleHandleA("user32.dll");
+    if (!u)
+        return 0;
+    r_GetWindowLongA = (GetWindowLongAFn)export_of(u, "GetWindowLongA");
+    r_SetWindowLongA = (SetWindowLongAFn)export_of(u, "SetWindowLongA");
+    r_SetWindowPos   = (SetWindowPosFn)export_of(u, "SetWindowPos");
+    r_ShowWindow     = (ShowWindowFn)export_of(u, "ShowWindow");
+    r_GetClientRect  = (GetRectFn)export_of(u, "GetClientRect");
+    r_GetWindowRect  = (GetRectFn)export_of(u, "GetWindowRect");
+    r_ClientToScreen = (ClientToScreenFn)export_of(u, "ClientToScreen");
+    return r_GetWindowLongA && r_SetWindowLongA && r_SetWindowPos && r_ShowWindow &&
+           r_GetClientRect && r_GetWindowRect && r_ClientToScreen;
+}
+
+static void client_rect_screen(HWND h, RECT *rc)
+{
+    POINT p = {0, 0};
+    r_GetClientRect(h, rc);
+    r_ClientToScreen(h, &p);
+    OffsetRect(rc, p.x, p.y);
+}
+
+static void window_from_client(HWND h, RECT *rc)
+{
+    AdjustWindowRectEx(rc, r_GetWindowLongA(h, GWL_STYLE) & ~WS_MAXIMIZE, GetMenu(h) != NULL,
+                       r_GetWindowLongA(h, GWL_EXSTYLE));
+}
+
+/* Let cnc-ddraw adopt the window rect `wrc` the way it does after a mouse resize.
+   `between` runs after the render thread is stopped and before the rect is taken. */
+static void cnc_size_move(HWND h, void (*between)(HWND), RECT *wrc)
+{
+    RECT cur;
+    g_busy = 1;
+    r_GetWindowRect(h, &cur);
+    CallWindowProcA(g_prev_proc, h, WM_ENTERSIZEMOVE, 0, 0);
+    CallWindowProcA(g_prev_proc, h, WM_SIZING, 0, (LPARAM)&cur); /* stops the render thread */
+    if (between) {
+        between(h);
+        r_GetWindowRect(h, wrc);
+    }
+    CallWindowProcA(g_prev_proc, h, WM_SIZING, 0, (LPARAM)wrc);  /* wParam 0: no aspect snapping */
+    CallWindowProcA(g_prev_proc, h, WM_EXITSIZEMOVE, 0, 0);      /* dd_SetDisplayMode */
+    g_busy = 0;
+}
+
+static void show_maximized(HWND h) { r_ShowWindow(h, SW_MAXIMIZE); }
+static void show_restored(HWND h)  { r_ShowWindow(h, SW_RESTORE); }
+
+static void set_max_bit(HWND h)
+{
+    LONG st = r_GetWindowLongA(h, GWL_STYLE);
+    if (!(st & WS_MAXIMIZE)) {
+        r_SetWindowLongA(h, GWL_STYLE, st | WS_MAXIMIZE);
+        r_SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+}
+
+static void do_maximize(HWND h)
+{
+    RECT wrc, crc;
+    if (!g_maxed)
+        client_rect_screen(h, &g_normal);
+    cnc_size_move(h, show_maximized, &wrc);
+    set_max_bit(h);
+    g_maxed = 1;
+    client_rect_screen(h, &crc);
+    logf("maximized: client %ldx%ld at %ld,%ld (restore to %ldx%ld at %ld,%ld), zoomed=%d",
+         crc.right - crc.left, crc.bottom - crc.top, crc.left, crc.top,
+         g_normal.right - g_normal.left, g_normal.bottom - g_normal.top, g_normal.left, g_normal.top,
+         IsZoomed(h) ? 1 : 0);
+}
+
+static void do_restore(HWND h)
+{
+    RECT wrc = g_normal, crc;
+    if (IsRectEmpty(&g_normal)) {  /* no size seen before maximizing: 2400x1800 (ini) centred */
+        MONITORINFO mi;
+        mi.cbSize = sizeof(mi);
+        GetMonitorInfoA(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+        SetRect(&wrc, 0, 0, 2400, 1800);
+        OffsetRect(&wrc, (mi.rcWork.left + mi.rcWork.right - 2400) / 2, (mi.rcWork.top + mi.rcWork.bottom - 1800) / 2);
+    }
+    g_maxed = 0;
+    window_from_client(h, &wrc);
+    cnc_size_move(h, NULL, &wrc);  /* dd_SetDisplayMode also drops WS_MAXIMIZE */
+    if (IsZoomed(h))
+        show_restored(h);
+    client_rect_screen(h, &crc);
+    logf("restored: client %ldx%ld at %ld,%ld", crc.right - crc.left, crc.bottom - crc.top, crc.left, crc.top);
+}
+
+static void toggle_maximize(HWND h)
+{
+    if (g_maxed)
+        do_restore(h);
+    else
+        do_maximize(h);
+}
+
+static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    LRESULT r;
+    int windowed = cnc_is_window(h) && !IsIconic(h);
+    if (windowed && !g_busy) {
+        switch (msg) {
+        case WM_SYSCOMMAND:
+            switch (wp & 0xFFF0) {
+            case SC_MAXIMIZE:
+                if (!g_maxed)
+                    do_maximize(h);
+                return 0;
+            case SC_RESTORE:
+                if (g_maxed) {
+                    do_restore(h);
+                    return 0;
+                }
+                break;
+            case SC_MOVE:
+            case SC_SIZE:
+                if (g_maxed)
+                    return 0;              /* a maximized window stays put */
+                break;
+            }
+            break;
+        case WM_NCLBUTTONDBLCLK:
+            if (wp == HTCAPTION)
+                toggle_maximize(h);
+            return 0;
+        case WM_CNC_TOGGLE_MAXIMIZE:
+            toggle_maximize(h);
+            return 0;
+        }
+    }
+    if (msg == WM_CMFIX_REMAX) {
+        g_remax_posted = 0;
+        if (g_maxed && windowed && !(r_GetWindowLongA(h, GWL_STYLE) & WS_MAXIMIZE)) {
+            logf("window is back while maximized: maximizing again");
+            do_maximize(h);
+        }
+        return 0;
+    }
+    r = CallWindowProcA(g_prev_proc, h, msg, wp, lp);
+    /* after Alt+Enter / an in-game switch cnc-ddraw brings the window back without WS_MAXIMIZE */
+    if (g_maxed && !g_busy && !g_remax_posted && (msg == WM_WINDOWPOSCHANGED || msg == WM_STYLECHANGED) &&
+        cnc_is_window(h) && !(r_GetWindowLongA(h, GWL_STYLE) & (WS_MAXIMIZE | WS_MINIMIZE)) &&
+        GetTickCount() - g_remax_tick > 1000) {
+        g_remax_posted = 1;
+        g_remax_tick = GetTickCount();
+        PostMessageA(h, WM_CMFIX_REMAX, 0, 0);
+    }
+    return r;
+}
+
+/* Put wndproc in front of the window's current proc (cnc-ddraw's, or opengl32's which sits on top
+   of it once the OpenGL renderer runs). cnc-ddraw puts the game's own proc back when the game
+   releases DirectDraw (graphics re-init) and subclasses again on the next SetCooperativeLevel, which
+   takes the current proc as "the game's" - so we never subclass while the game's own proc is on
+   top (cnc-ddraw would then call us from its proc and we it: endless recursion); the check repeats. */
+static void ensure_subclass(HWND h)
+{
+    static BYTE *last_seen;
+    HMODULE exe = GetModuleHandleA(NULL), m = NULL;
+    BYTE *cur = (BYTE *)GetWindowLongW(h, GWL_WNDPROC);  /* the real address for a W or A proc */
+    LONG prev;
+    if ((WNDPROC)r_GetWindowLongA(h, GWL_WNDPROC) == wndproc)
+        return;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCSTR)cur, &m) || m == exe || m == g_self) {
+        if (cur != last_seen)
+            logf("game window proc %p is the game's own; not subclassing yet", (void *)cur);
+        last_seen = cur;
+        return;
+    }
+    last_seen = cur;
+    prev = r_SetWindowLongA(h, GWL_WNDPROC, (LONG)wndproc);
+    g_prev_proc = (WNDPROC)prev;
+    {
+        char mn[MAX_PATH] = "?";
+        GetModuleFileNameA(m, mn, MAX_PATH);
+        logf("subclassed game window %p over %p (%s)", (void *)h, (void *)cur, strrchr(mn, '\\') ? strrchr(mn, '\\') + 1 : mn);
+    }
+}
+
 static DWORD WINAPI worker(void *arg)
 {
     int tries = 0;
@@ -125,9 +378,11 @@ static DWORD WINAPI worker(void *arg)
     for (;;) {
         HWND h;
         Sleep(150);
+        h = *(HWND *)GAME_HWND_PTR;
+        if (g_subclass_ok && h && IsWindow(h))
+            ensure_subclass(h);
         if (!g_pending || GetTickCount() - g_pending_tick < 700)
             continue;
-        h = *(HWND *)GAME_HWND_PTR;
         if (!h || !IsWindow(h) || !IsWindowVisible(h))
             continue;
         if (cnc_is_window(h) == !g_want_full) {
@@ -199,6 +454,10 @@ static void install(void)
     *(DWORD *)(g + 1) = (DWORD)&g_logical_full;
     VirtualProtect(g, 6, old, &old);
     FlushInstructionCache(GetCurrentProcess(), g, 6);
+    g_subclass_ok = resolve_user32();
+    if (!g_subclass_ok) {
+        logf("user32 exports not found; maximize fix disabled");
+    }
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     logf("hooks installed at %08X and %08X", GFX_INIT, IS_FULL_GETTER);
 }
