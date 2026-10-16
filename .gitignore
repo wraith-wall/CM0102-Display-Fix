@@ -4,3 +4,5 @@
 !/_tools/
 !/_docs/
 __pycache__/
+_tools/cmfix/build/*
+!_tools/cmfix/build/dsound.dll

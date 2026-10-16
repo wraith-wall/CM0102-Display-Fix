@@ -9,6 +9,9 @@ Profile JSON:
   {"base": "_downloads/cnc-ddraw-v7.1.0.0/extracted",   // relative to the dev folder
    "files": ["ddraw.dll", "Shaders"],                    // copied as-is (dirs recursively)
    "ini": {"file": "ddraw.ini", "set": {"windowed": "true", ...}},  // copy of base ini with [ddraw] keys overridden
+   "extra": [{"src": "_tools/cmfix/build/dsound.dll", "dst": "dsound.dll"}],  // more files, relative to the dev folder
+   "cleanup": ["cmfix.log"],                             // files the wrapper creates at runtime; removed on uninstall
+   "keep_screen_mode": true,                             // play.py: don't force Screen Mode = Full
    "extends": "other_profile"}                           // optional: inherit + override "set"
 
 Everything installed is recorded in _logs\\wrapper_installed.json (path + sha256), and
@@ -109,6 +112,8 @@ def install(name):
                     put(s, os.path.join(C.GAME_DIR, os.path.relpath(s, base)))
         else:
             put(src, os.path.join(C.GAME_DIR, item))
+    for e in p.get("extra", []):
+        put(os.path.join(C.ROOT, e["src"]), os.path.join(C.GAME_DIR, e["dst"]))
     if "ini" in p:
         ini = p["ini"]
         with open(os.path.join(base, ini["file"]), encoding="utf-8", errors="replace") as f:
@@ -121,7 +126,8 @@ def install(name):
         records.append({"path": ini["file"], "sha256": sha256(dst)})
     dirs = sorted({os.path.dirname(r["path"]) for r in records if os.path.dirname(r["path"])}, key=len, reverse=True)
     with open(MANIFEST, "w", encoding="utf-8") as f:
-        json.dump({"profile": name, "files": records, "dirs": dirs, "set": p.get("ini", {}).get("set", {})}, f, indent=1)
+        json.dump({"profile": name, "files": records, "dirs": dirs, "set": p.get("ini", {}).get("set", {}),
+                   "cleanup": p.get("cleanup", [])}, f, indent=1)
     C.log(f"wrapper installed: profile={name} files={len(records)} ini={p.get('ini', {}).get('set')}")
     return p
 
@@ -137,6 +143,10 @@ def uninstall():
         if os.path.exists(path):
             if sha256(path) != r["sha256"]:
                 changed.append(r["path"])
+            os.remove(path)
+    for c in m.get("cleanup", []):
+        path = os.path.join(C.GAME_DIR, c)
+        if os.path.exists(path):
             os.remove(path)
     for d in m["dirs"]:
         full = os.path.join(C.GAME_DIR, d)

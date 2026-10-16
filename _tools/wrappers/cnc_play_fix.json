@@ -1,0 +1,4 @@
+{"extends": "cnc_play",
+ "extra": [{"src": "_tools/cmfix/build/dsound.dll", "dst": "dsound.dll"}],
+ "cleanup": ["cmfix.log"],
+ "keep_screen_mode": true}

@@ -1,0 +1,3 @@
+LIBRARY dsound
+EXPORTS
+    DirectSoundCreate = cmfix_DirectSoundCreate @1
