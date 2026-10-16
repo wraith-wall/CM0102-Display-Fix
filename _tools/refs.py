@@ -52,10 +52,13 @@ def score(img, name, idx=None):
     return ok / max(len(pts), 1), len(pts)
 
 
-def matches(img, name, idx=None):
+NEED_OVERRIDE = None  # e.g. scenario "ref_need" for heavily filtered (smoothing shader) output
+
+
+def matches(img, name, idx=None, need=None):
     idx = idx or _index()
     s, _ = score(img, name, idx)
-    return s >= idx[name].get("need", 0.85)
+    return s >= (need or NEED_OVERRIDE or idx[name].get("need", 0.85))
 
 
 def main():

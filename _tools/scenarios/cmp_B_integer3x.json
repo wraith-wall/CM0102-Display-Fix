@@ -1,0 +1,137 @@
+{
+ "name": "cmp_B_integer3x",
+ "wrapper": "cmp_B_integer3x",
+ "screen_mode": "full",
+ "map": "fit_aspect_int",
+ "launch": {
+  "exe": "cm0102.exe",
+  "args": "",
+  "timeout": 60
+ },
+ "steps": [
+  {
+   "wait_match": "main_menu",
+   "timeout": 120
+  },
+  {
+   "capture": "main_menu"
+  },
+  {
+   "click": [
+    613,
+    307
+   ],
+   "until": "game_settings"
+  },
+  {
+   "capture": "game_settings"
+  },
+  {
+   "click": [
+    371,
+    524
+   ],
+   "until": "main_menu"
+  },
+  {
+   "click": [
+    276,
+    177
+   ],
+   "until": "select_leagues"
+  },
+  {
+   "capture": "select_leagues"
+  },
+  {
+   "click": [
+    704,
+    572
+   ],
+   "until": "cd_not_required"
+  },
+  {
+   "capture": "cd_not_required"
+  },
+  {
+   "click": [
+    398,
+    330
+   ],
+   "until": "enter_name",
+   "timeout": 180
+  },
+  {
+   "capture": "enter_name"
+  },
+  {
+   "type": "Test",
+   "settle": false
+  },
+  {
+   "key": "ENTER",
+   "settle": false
+  },
+  {
+   "wait": 0.5
+  },
+  {
+   "type": "Harness",
+   "settle": false
+  },
+  {
+   "key": "ENTER",
+   "settle": false
+  },
+  {
+   "wait": 0.5
+  },
+  {
+   "capture": "name_typed"
+  },
+  {
+   "click": [
+    704,
+    572
+   ],
+   "until": "select_nationality"
+  },
+  {
+   "capture": "select_nationality"
+  },
+  {
+   "click": [
+    704,
+    572
+   ],
+   "until": "select_team"
+  },
+  {
+   "capture": "select_team"
+  },
+  {
+   "click": [
+    160,
+    163
+   ],
+   "settle": false
+  },
+  {
+   "wait": 0.5
+  },
+  {
+   "click": [
+    704,
+    572
+   ],
+   "until": "arsenal_squad"
+  },
+  {
+   "capture": "squad_arsenal"
+  },
+  {
+   "assert_match": "arsenal_squad"
+  }
+ ],
+ "quit": true
+}

@@ -1,0 +1,24 @@
+{
+ "base": "_downloads/cnc-ddraw-v7.1.0.0/extracted",
+ "files": [
+  "ddraw.dll",
+  "Shaders"
+ ],
+ "ini": {
+  "file": "ddraw.ini",
+  "set": {
+   "savesettings": "0",
+   "singlecpu": "false",
+   "renderer": "opengl",
+   "windowed": "true",
+   "fullscreen": "false",
+   "maintas": "true",
+   "resizable": "true",
+   "adjmouse": "true",
+   "border": "true",
+   "posX": "-32000",
+   "posY": "-32000",
+   "shader": "Shaders/nearest-neighbor.glsl"
+  }
+ }
+}

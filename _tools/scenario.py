@@ -22,7 +22,9 @@ File format:
     {"capture_all": "dialogs"},                   // every visible window of the process
     {"expect_title": "Error"}                     // record whether a window with this title exists
   ],
-  "map": "dpi",                                   // default coordinate mapping for clicks (see input.py)
+  "map": "dpi",                                   // dpi (stock) | fit | fit_aspect (wrapper): where the frame sits
+  "wrapper": "cnc_borderless",                    // optional: install _tools/wrappers/<profile>.json for this run
+  "screen_mode": "full",                          // optional: set Screen Mode in game.cfg before launch (cfg.py)
   "quit": true
 }
 (// comments are documentation only; real scenario files are plain JSON.)
@@ -43,13 +45,23 @@ import common as C
 import game
 import input as INP
 import refs as REFS
+import cfg as CFG
+import wrapper as WRAP
+
+
+MAP = "dpi"  # set per scenario: how the game frame sits in the client (see input.content_rect)
 
 
 def frame(hwnd):
-    """Native game frame (client area, cropped to GAME_SIZE)."""
-    full, _, (wl, wt_, cl, ct, cr, cb) = CAP.printwindow(hwnd)
+    """The game frame in game coordinates (GAME_SIZE).
+    Stock game (map dpi): PrintWindow crop. Wrapper (fit/fit_aspect): screen grab of the
+    content rect, resized down to GAME_SIZE so refs and coordinates stay the same."""
     gw, gh = C.GAME_SIZE
-    return full.crop((cl - wl, ct - wt_, cl - wl + min(gw, cr - cl), ct - wt_ + min(gh, cb - ct)))
+    if MAP == "dpi":
+        full, _, (wl, wt_, cl, ct, cr, cb) = CAP.printwindow(hwnd)
+        return full.crop((cl - wl, ct - wt_, cl - wl + min(gw, cr - cl), ct - wt_ + min(gh, cb - ct)))
+    from PIL import Image
+    return CAP.screen_grab(INP.content_rect(hwnd, C.GAME_SIZE, MAP)).resize((gw, gh), Image.BOX)
 
 
 def mostly_black(img, frac=0.9):
@@ -141,7 +153,17 @@ def run(path, keep_running=False):
     os.makedirs(out, exist_ok=True)
     summary = {"scenario": path, "out": out, "captures": [], "ok": False}
     C.log(f"=== scenario {name} -> {out}")
+    global MAP
+    MAP = sc.get("map", "dpi")
+    REFS.NEED_OVERRIDE = sc.get("ref_need")
     try:
+        if sc.get("wrapper"):
+            WRAP.install(sc["wrapper"])
+            summary["wrapper"] = WRAP.installed()
+        elif WRAP.installed():
+            WRAP.uninstall()
+        if sc.get("screen_mode"):
+            CFG.set_screen(sc["screen_mode"])
         st = game.launch(**sc.get("launch", {}))
         summary["launch"] = st
         hwnd = st["hwnd"]
@@ -158,6 +180,13 @@ def run(path, keep_running=False):
                 C.log(f"wait_stable -> {'stable' if ok_ else 'TIMEOUT'}")
                 if not ok_ and step.get("fatal", True):
                     raise RuntimeError(f"screen not stable/non-blank within {step['wait_stable']}s")
+            elif "capture" in step and MAP != "dpi":
+                info = CAP.capture(hwnd, f"{i:02d}_{step['capture']}", "screen", step.get("desktop", False), out_dir=out)
+                game_png = info["png"][:-4] + "_game.png"
+                frame(hwnd).save(game_png)
+                summary["captures"].append({"png": game_png, "screen_png": info["png"], "client_rect_screen": info["client_rect_screen"],
+                                            "content_rect": INP.content_rect(hwnd, C.GAME_SIZE, MAP), "window_dpi": info["window_dpi"],
+                                            "process_dpi_awareness": info["process_dpi_awareness"]})
             elif "capture" in step:
                 info = CAP.capture(hwnd, f"{i:02d}_{step['capture']}", step.get("method", "auto"),
                                    step.get("desktop", False), out_dir=out,
@@ -193,7 +222,7 @@ def run(path, keep_running=False):
                 before = frame(hwnd)
                 x, y = step["click"]
                 INP.click(x, y, hwnd, step.get("right", False), step.get("double", False),
-                          step.get("method", "sendinput"), mode=step.get("map", sc.get("map", "dpi")))
+                          step.get("method", "sendinput"), mode=step.get("map", MAP))
                 settle(hwnd, before, step)
             elif "key" in step:
                 before = frame(hwnd)
@@ -214,6 +243,8 @@ def run(path, keep_running=False):
     finally:
         if sc.get("quit", True) and not keep_running:
             game.kill()
+            if sc.get("wrapper"):
+                WRAP.uninstall()
         summary["contact_sheet"] = contact_sheet([c["png"] for c in summary["captures"]],
                                                  os.path.join(out, "contact_sheet.png"))
         with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:

@@ -1,0 +1,9 @@
+{
+ "extends": "cnc_borderless",
+ "ini": {
+  "set": {
+   "shader": "Shaders/nearest-neighbor.glsl",
+   "boxing": "true"
+  }
+ }
+}

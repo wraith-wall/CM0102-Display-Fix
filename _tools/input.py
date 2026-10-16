@@ -91,6 +91,28 @@ def logical_client_size(hwnd):
     return r.right, r.bottom
 
 
+def content_rect(hwnd, game_size=C.GAME_SIZE, mode="dpi"):
+    """Physical screen rect (l, t, r, b) where the game frame is shown.
+    dpi: game pixels == logical client pixels, at the client's top-left (stock game);
+    fit: frame stretched over the whole client; fit_aspect: largest centred rect with the
+    game's aspect ratio (wrappers with maintas, e.g. cnc-ddraw); fit_aspect_int: same but
+    integer scale factor (cnc-ddraw boxing=true)."""
+    l, t, r, b = C.client_rect_screen(hwnd)
+    gw, gh = game_size
+    if mode == "dpi":
+        lw, lh = logical_client_size(hwnd)
+        sx, sy = (r - l) / lw, (b - t) / lh
+        return l, t, l + round(gw * sx), t + round(gh * sy)
+    if mode == "fit":
+        return l, t, r, b
+    s = min((r - l) / gw, (b - t) / gh)
+    if mode == "fit_aspect_int":  # integer scaling ("boxing" in cnc-ddraw)
+        s = max(1, int(s))
+    w, h = round(gw * s), round(gh * s)
+    x0, y0 = l + ((r - l) - w) // 2, t + ((b - t) - h) // 2
+    return x0, y0, x0 + w, y0 + h
+
+
 def game_to_logical_client(hwnd, x, y, game_size=C.GAME_SIZE, mode="dpi"):
     """mode "dpi": game pixels == the window's logical client pixels (game draws 1:1 at top-left;
     true for stock cm0102/cm0102_GDI). mode "fit": game_size is stretched over the whole client
@@ -103,10 +125,7 @@ def game_to_logical_client(hwnd, x, y, game_size=C.GAME_SIZE, mode="dpi"):
 
 
 def game_to_screen(hwnd, x, y, game_size=C.GAME_SIZE, mode="dpi"):
-    l, t, r, b = C.client_rect_screen(hwnd)
-    if mode == "dpi":
-        lw, lh = logical_client_size(hwnd)
-        return int(l + (x + 0.5) * (r - l) / lw), int(t + (y + 0.5) * (b - t) / lh)
+    l, t, r, b = content_rect(hwnd, game_size, mode)
     gw, gh = game_size
     return int(l + (x + 0.5) * (r - l) / gw), int(t + (y + 0.5) * (b - t) / gh)
 
@@ -190,7 +209,7 @@ def main():
     ap.add_argument("--hwnd", type=lambda s: int(s, 0))
     ap.add_argument("--method", default="sendinput", choices=["sendinput", "post"])
     ap.add_argument("--game-size", default=f"{C.GAME_SIZE[0]}x{C.GAME_SIZE[1]}")
-    ap.add_argument("--map", default="dpi", choices=["dpi", "fit"], help="see game_to_logical_client")
+    ap.add_argument("--map", default="dpi", choices=["dpi", "fit", "fit_aspect", "fit_aspect_int"], help="see content_rect")
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("click"); c.add_argument("x", type=int); c.add_argument("y", type=int)
     c.add_argument("--right", action="store_true"); c.add_argument("--double", action="store_true")
