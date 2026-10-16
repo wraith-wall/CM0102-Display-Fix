@@ -1,5 +1,6 @@
 """Play the dev copy with a wrapper profile (for trying a look by hand).
 
+  python play.py cnc_window             # window 2400x1800, OmniScale; Alt+Enter = borderless fullscreen
   python play.py cmp_F_omniscale        # any _tools\\wrappers\\<profile>.json
   python play.py --stock                # remove the wrapper, run cm0102_GDI.exe windowed as before
 

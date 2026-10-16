@@ -1,0 +1,17 @@
+{
+ "extends": "cnc_base",
+ "ini": {
+  "set": {
+   "windowed": "true",
+   "fullscreen": "false",
+   "border": "true",
+   "resizable": "true",
+   "maintas": "true",
+   "width": "2400",
+   "height": "1800",
+   "toggle_borderless": "true",
+   "shader": "Shaders/omniscale/omniscale.glsl",
+   "devmode": "true"
+  }
+ }
+}
