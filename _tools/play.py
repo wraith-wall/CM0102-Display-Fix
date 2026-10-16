@@ -1,8 +1,14 @@
 """Play the dev copy with a wrapper profile (for trying a look by hand).
 
-  python play.py cnc_window             # window 2400x1800, OmniScale; Alt+Enter = borderless fullscreen
+  python play.py                        # = cnc_play: starts borderless fullscreen 4:3, Alt+Enter = resizable window
+  python play.py cnc_window             # starts as a 2400x1800 window instead
   python play.py cmp_F_omniscale        # any _tools\\wrappers\\<profile>.json
   python play.py --stock                # remove the wrapper, run cm0102_GDI.exe windowed as before
+
+Window/fullscreen is switched with Alt+Enter (cnc-ddraw), NOT with the game's own
+Game Settings -> Screen Mode: in-game "Windowed" makes the game ask for a desktop-sized
+canvas and draw 800x600 into its top-left corner. play.py resets the setting to Full on
+every start.
 
 Installs the profile, sets Screen Mode = Full (so the game asks for 800x600 and the wrapper
 scales it; the real display mode never changes), and starts cm0102.exe through game.py so the
@@ -19,12 +25,12 @@ import wrapper
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("profile", nargs="?")
+    ap.add_argument("profile", nargs="?", default="cnc_play")
     ap.add_argument("--stock", action="store_true")
     a = ap.parse_args()
     if game.running_pid():
         game.kill()
-    if a.stock or not a.profile:
+    if a.stock:
         wrapper.uninstall()
         game.launch(exe="cm0102_GDI.exe", args="-windowed")
         return

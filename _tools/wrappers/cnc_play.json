@@ -1,0 +1,4 @@
+{"extends": "cnc_window", "ini": {"set": {
+  "windowed": "true", "fullscreen": "true", "border": "true",
+  "toggle_borderless": "true"
+}}}
