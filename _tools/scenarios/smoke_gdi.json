@@ -1,0 +1,21 @@
+{
+ "name": "smoke_gdi",
+ "launch": {
+  "exe": "cm0102_GDI.exe",
+  "args": "-windowed",
+  "timeout": 60
+ },
+ "steps": [
+  {
+   "wait_match": "main_menu",
+   "timeout": 120
+  },
+  {
+   "capture": "main_menu"
+  },
+  {
+   "assert_match": "main_menu"
+  }
+ ],
+ "quit": true
+}

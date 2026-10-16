@@ -1,0 +1,74 @@
+{
+ "main_menu": {
+  "box": [
+   300,
+   85,
+   600,
+   120
+  ],
+  "src": "20261016_193336_124_gdi_wait25.png"
+ },
+ "game_settings": {
+  "box": [
+   360,
+   68,
+   530,
+   98
+  ],
+  "src": "20261016_193407_115_gdi_game_settings.png"
+ },
+ "select_leagues": {
+  "box": [
+   320,
+   85,
+   570,
+   120
+  ],
+  "src": "20261016_193536_215_gdi_new_game_1.png"
+ },
+ "cd_not_required": {
+  "box": [
+   252,
+   245,
+   400,
+   263
+  ],
+  "src": "20261016_193549_683_gdi_new_game_2.png"
+ },
+ "enter_name": {
+  "box": [
+   350,
+   85,
+   540,
+   120
+  ],
+  "src": "20261016_193623_616_gdi_new_game_3.png"
+ },
+ "select_nationality": {
+  "box": [
+   310,
+   85,
+   580,
+   120
+  ],
+  "src": "20261016_193650_788_gdi_new_game_5.png"
+ },
+ "select_team": {
+  "box": [
+   350,
+   85,
+   540,
+   120
+  ],
+  "src": "20261016_193702_830_gdi_new_game_6.png"
+ },
+ "arsenal_squad": {
+  "box": [
+   370,
+   22,
+   520,
+   60
+  ],
+  "src": "20261016_193716_072_gdi_new_game_7.png"
+ }
+}

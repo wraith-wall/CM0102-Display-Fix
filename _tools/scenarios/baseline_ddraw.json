@@ -1,0 +1,29 @@
+{
+  "name": "baseline_ddraw",
+  "launch": {
+    "exe": "cm0102.exe",
+    "args": "-windowed",
+    "timeout": 60
+  },
+  "steps": [
+    {
+      "wait": 3
+    },
+    {
+      "capture_all": "windows_3s"
+    },
+    {
+      "wait": 12
+    },
+    {
+      "expect_title": "Error"
+    },
+    {
+      "capture_all": "windows_15s"
+    },
+    {
+      "capture": "main_window_15s"
+    }
+  ],
+  "quit": true
+}
