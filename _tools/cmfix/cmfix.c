@@ -34,6 +34,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+#define CMFIX_VERSION   "0.1.0"  /* release.py reads it from here */
+
 #define GFX_INIT        0x005E2620u
 #define GFX_INIT_RET    0x005E2625u
 #define GFX_INIT_GLOBAL 0x009CD808u
@@ -144,9 +146,15 @@ static int toggle(HWND h)
  * The real user32 functions are looked up in user32's export table directly.
  * dd_SetDisplayMode clears WS_MAXIMIZE whenever it runs, so the bit is put back afterwards
  * (also after Alt+Enter / an in-game mode switch returns to the window while "maximized").
+ *
+ * First window: with width=0/height=0 in ddraw.ini (the release default, since no fixed size
+ * suits both 1080p and 4K) cnc-ddraw opens the window at the native 800x600, tiny on a big
+ * screen. The first time the window shows up at that size it is resized once, the same way,
+ * to the largest 4:3 client that fits 85% of the monitor's work area (see fit_rect).
  */
 #define WM_CNC_TOGGLE_MAXIMIZE (WM_APP + 118)  /* cnc-ddraw: Alt+PgDn hotkey */
 #define WM_CMFIX_REMAX         (WM_APP + 201)
+#define WM_CMFIX_FIT           (WM_APP + 202)
 
 typedef LONG(WINAPI *GetWindowLongAFn)(HWND, int);
 typedef LONG(WINAPI *SetWindowLongAFn)(HWND, int, LONG);
@@ -169,6 +177,8 @@ static int g_busy;                 /* inside our own resize sequence */
 static int g_remax_posted;
 static DWORD g_remax_tick;
 static RECT g_normal;              /* client rect (screen coords) before maximizing */
+static int g_fit_wanted;           /* ddraw.ini leaves the window size to us (width/height 0) */
+static volatile LONG g_fit_done;   /* the first window was sized (or did not need it) */
 
 static FARPROC export_of(HMODULE mod, const char *name)
 {
@@ -265,16 +275,41 @@ static void do_maximize(HWND h)
          IsZoomed(h) ? 1 : 0);
 }
 
+/* the largest 4:3 client (at least 800x600) that fits 85% of the work area, centred */
+static void fit_rect(HWND h, RECT *rc)
+{
+    MONITORINFO mi;
+    int ww, wh, w, hh;
+    mi.cbSize = sizeof(mi);
+    GetMonitorInfoA(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+    ww = mi.rcWork.right - mi.rcWork.left;
+    wh = mi.rcWork.bottom - mi.rcWork.top;
+    hh = min(wh * 85 / 100, ww * 85 / 100 * 3 / 4) / 3 * 3;
+    hh = max(hh, 600);
+    w = hh * 4 / 3;
+    SetRect(rc, 0, 0, w, hh);
+    OffsetRect(rc, (mi.rcWork.left + mi.rcWork.right - w) / 2, (mi.rcWork.top + mi.rcWork.bottom - hh) / 2);
+}
+
+static void do_fit(HWND h)
+{
+    RECT wrc, crc;
+    r_GetClientRect(h, &crc);
+    if (g_maxed || crc.right != 800 || crc.bottom != 600)
+        return;                    /* the player has already sized it */
+    fit_rect(h, &wrc);
+    window_from_client(h, &wrc);
+    cnc_size_move(h, NULL, &wrc);
+    client_rect_screen(h, &crc);
+    logf("first window fitted to the screen: client %ldx%ld at %ld,%ld", crc.right - crc.left, crc.bottom - crc.top,
+         crc.left, crc.top);
+}
+
 static void do_restore(HWND h)
 {
     RECT wrc = g_normal, crc;
-    if (IsRectEmpty(&g_normal)) {  /* no size seen before maximizing: 2400x1800 (ini) centred */
-        MONITORINFO mi;
-        mi.cbSize = sizeof(mi);
-        GetMonitorInfoA(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
-        SetRect(&wrc, 0, 0, 2400, 1800);
-        OffsetRect(&wrc, (mi.rcWork.left + mi.rcWork.right - 2400) / 2, (mi.rcWork.top + mi.rcWork.bottom - 1800) / 2);
-    }
+    if (IsRectEmpty(&g_normal))    /* no size seen before maximizing */
+        fit_rect(h, &wrc);
     g_maxed = 0;
     window_from_client(h, &wrc);
     cnc_size_move(h, NULL, &wrc);  /* dd_SetDisplayMode also drops WS_MAXIMIZE */
@@ -325,6 +360,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             toggle_maximize(h);
             return 0;
         }
+    }
+    if (msg == WM_CMFIX_FIT) {
+        if (windowed && !g_busy)
+            do_fit(h);
+        return 0;
     }
     if (msg == WM_CMFIX_REMAX) {
         g_remax_posted = 0;
@@ -386,6 +426,11 @@ static DWORD WINAPI worker(void *arg)
         h = *(HWND *)GAME_HWND_PTR;
         if (g_subclass_ok && h && IsWindow(h))
             ensure_subclass(h);
+        if (g_fit_wanted && !g_fit_done && !g_pending && h && IsWindow(h) && IsWindowVisible(h) &&
+            cnc_is_window(h) && (WNDPROC)r_GetWindowLongA(h, GWL_WNDPROC) == wndproc) {
+            InterlockedExchange(&g_fit_done, 1);
+            PostMessageA(h, WM_CMFIX_FIT, 0, 0);
+        }
         if (!g_pending || GetTickCount() - g_pending_tick < 700)
             continue;
         if (!h || !IsWindow(h) || !IsWindowVisible(h))
@@ -647,6 +692,16 @@ static void install(void)
     if (!g_subclass_ok) {
         logf("user32 exports not found; maximize fix disabled");
     }
+    {
+        /* cnc-ddraw's window size: [ddraw], or the game's own section, which overrides it */
+        char ini[MAX_PATH], *slash;
+        GetModuleFileNameA(ddraw, ini, MAX_PATH);
+        slash = strrchr(ini, '\\');
+        lstrcpyA(slash ? slash + 1 : ini, "ddraw.ini");
+        g_fit_wanted = g_subclass_ok &&
+                       GetPrivateProfileIntA("cm0102", "width", GetPrivateProfileIntA("ddraw", "width", 0, ini), ini) == 0 &&
+                       GetPrivateProfileIntA("cm0102", "height", GetPrivateProfileIntA("ddraw", "height", 0, ini), ini) == 0;
+    }
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     logf("hooks installed at %08X and %08X", GFX_INIT, IS_FULL_GETTER);
 #ifndef CMFIX_TEXTLOG
@@ -671,7 +726,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         lstrcpyA(slash ? slash + 1 : g_log_path, "cmfix.log");
         lstrcpyA(g_ini_path, g_log_path);
         lstrcpyA(g_ini_path + lstrlenA(g_ini_path) - 3, "ini");
-        logf("cmfix loaded");
+        logf("cmfix " CMFIX_VERSION " loaded");
         install();
 #ifdef CMFIX_TEXTLOG
         textlog_install();

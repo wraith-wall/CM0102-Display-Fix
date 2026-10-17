@@ -1,0 +1,4 @@
+{"extends": "cnc_play_fix",
+ "extra": [{"src": "_tools/cmfix/build/dsound.dll", "dst": "dsound.dll"},
+           {"src": "_tools/cmfix/cmfix.ini", "dst": "cmfix.ini"}],
+ "ini": {"set": {"width": "0", "height": "0"}}}
