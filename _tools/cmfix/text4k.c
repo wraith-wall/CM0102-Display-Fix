@@ -22,6 +22,8 @@
  *
  * Until the overlay has run once (cnc-ddraw renderer=opengl calling SwapBuffers), the game keeps
  * drawing its own glyphs, so another renderer just means low-res text, never missing text.
+ * Likewise text4k stays off if its font is not installed, and leaves the text to the game while
+ * the frame is not 800x600 (resolution patches such as CM0102Patcher's 1280x800).
  *
  * Threads: the hooks on the game's functions run on the game thread and own the scene;
  * the overlay runs on cnc-ddraw's render thread and reads a snapshot under g_snap_cs.
@@ -32,6 +34,7 @@
 #include <stdlib.h>
 
 void logf(const char *fmt, ...);
+int cfg_get(const char *name, char *dst, int cap);  /* cmfix.c: CMFIX_<NAME> or cmfix.ini */
 
 #define T_DRAW     0x005E5160  /* draw_string(x, y, short font, u16 color565, const char *s, int caret) */
 #define T_PRESENT  0x005E2EB0  /* present_rect(x0, y0, x1, y1) */
@@ -209,9 +212,10 @@ static int line_height(int font)
     return kT2kLine[font];
 }
 
-/* Traditional fonts selected (in game, at any time): the game draws them itself; strings
-   recorded while Futuristic was on must not stay on top of its glyphs */
+/* Traditional fonts selected (in game, at any time) or a frame other than 800x600: the game
+   draws its text itself; strings recorded before must not stay on top of its glyphs */
 static int g_scene_empty = 1;
+static int g_size_logged;
 
 static void drop_all(void)
 {
@@ -269,6 +273,18 @@ static int __cdecl on_draw(DWORD *a)
         return 0;
     if (!lock_back(&l))
         return 0;
+    if (l.w != GAME_W || l.h != GAME_H) {
+        /* a resolution patch (CM0102Patcher/Loader 1280x800, 1024x576...): positions, font
+           metrics and line heights are not the ones text4k knows */
+        unlock_back(&l);
+        if (!g_size_logged) {
+            logf("text4k: game frame is %dx%d, not %dx%d; text left to the game", l.w, l.h, GAME_W, GAME_H);
+            g_size_logged = 1;
+        }
+        if (!g_scene_empty)
+            drop_all();
+        return 0;
+    }
     for (i = 0; i < MAX_ITEMS; i++) {
         Item *it = &g_items[i];
         if (!it->state) {
@@ -1107,17 +1123,39 @@ static void patch_jmp5(DWORD at, void *to, int len)
     FlushInstructionCache(GetCurrentProcess(), p, len);
 }
 
-static void env_str(const char *name, char *dst, int cap)
+static void cfg_str(const char *name, char *dst, int cap)
 {
     char v[LF_FACESIZE];
-    if (GetEnvironmentVariableA(name, v, sizeof(v)))
+    if (cfg_get(name, v, sizeof(v)) && v[0])
         lstrcpynA(dst, v, cap);
 }
 
-static float env_float(const char *name, float def)
+static float cfg_float(const char *name, float def)
 {
     char v[32];
-    return GetEnvironmentVariableA(name, v, sizeof(v)) ? (float)atof(v) : def;
+    return cfg_get(name, v, sizeof(v)) && v[0] ? (float)atof(v) : def;
+}
+
+static int CALLBACK font_found(const LOGFONTA *lf, const TEXTMETRICA *tm, DWORD type, LPARAM found)
+{
+    (void)lf; (void)tm;
+    if (type & TRUETYPE_FONTTYPE)
+        *(int *)found = 1;
+    return 0;
+}
+
+/* GDI would silently substitute a missing face (Eras Demi ITC comes with MS Office) */
+static int font_installed(const char *face)
+{
+    LOGFONTA lf;
+    int found = 0;
+    HDC dc = GetDC(NULL);
+    ZeroMemory(&lf, sizeof(lf));
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lstrcpynA(lf.lfFaceName, face, LF_FACESIZE);
+    EnumFontFamiliesExA(dc, &lf, (FONTENUMPROCA)font_found, (LPARAM)&found, 0);
+    ReleaseDC(NULL, dc);
+    return found;
 }
 
 /* called from cmfix's install() once the game code and cnc-ddraw are known to match */
@@ -1128,13 +1166,21 @@ int text4k_install(void)
         logf("text4k: code does not match 3.9.68; off");
         return 0;
     }
-    env_str("CMFIX_TEXT4K_FONT", g_face_small, LF_FACESIZE);
-    env_str("CMFIX_TEXT4K_FONT", g_face_large, LF_FACESIZE);
-    env_str("CMFIX_TEXT4K_FONT_LARGE", g_face_large, LF_FACESIZE);
-    g_weight_large = (int)env_float("CMFIX_TEXT4K_WEIGHT_LARGE", (float)g_weight_large);
-    g_em_k = env_float("CMFIX_TEXT4K_EM", g_em_k);
-    g_y_off = env_float("CMFIX_TEXT4K_YOFF", g_y_off);
-    g_debug = env_float("CMFIX_TEXT4K_DEBUG", 0) != 0;
+    cfg_str("TEXT4K_FONT", g_face_small, LF_FACESIZE);
+    cfg_str("TEXT4K_FONT", g_face_large, LF_FACESIZE);
+    cfg_str("TEXT4K_FONT_LARGE", g_face_large, LF_FACESIZE);
+    g_weight_large = (int)cfg_float("TEXT4K_WEIGHT_LARGE", (float)g_weight_large);
+    g_em_k = cfg_float("TEXT4K_EM", g_em_k);
+    g_y_off = cfg_float("TEXT4K_YOFF", g_y_off);
+    g_debug = cfg_float("TEXT4K_DEBUG", 0) != 0;
+    if (!font_installed(g_face_small)) {
+        logf("text4k: font \"%s\" is not installed (TrueType); off", g_face_small);
+        return 0;
+    }
+    if (!font_installed(g_face_large)) {
+        logf("text4k: font \"%s\" is not installed (TrueType); using \"%s\" for titles", g_face_large, g_face_small);
+        lstrcpynA(g_face_large, g_face_small, LF_FACESIZE);
+    }
     InitializeCriticalSection(&g_snap_cs);
     if (!hook_ddraw_swap()) {
         logf("text4k: SwapBuffers import not found in ddraw.dll; off");
@@ -1149,7 +1195,7 @@ int text4k_install(void)
     if (!g_orig_grab || !g_orig_put || !g_orig_dim || !g_orig_panel)
         return 0;
     patch_jmp5(T_GRAB, my_grab, 5);
-    if (env_float("CMFIX_TEXT4K_PROBE", 0) != 0)
+    if (cfg_float("TEXT4K_PROBE", 0) != 0)
         probe_install();
     patch_jmp5(T_PUT, my_put, 5);
     patch_jmp5(T_DIM, my_dim, 5);

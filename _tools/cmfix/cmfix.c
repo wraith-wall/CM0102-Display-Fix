@@ -18,8 +18,9 @@
  *     Since the real flag [0xAE319C] is now always 1 (it also selects the present path at
  *     0x5E2F8D and must stay 1), the getter is redirected to the mode the player chose.
  *
- * With CMFIX_TEXT4K=1 in the environment, text4k.c also takes over the game's text drawing and
- * redraws the strings at the output resolution on top of cnc-ddraw's picture (crisp text).
+ * With text4k=1 (cmfix.ini or CMFIX_TEXT4K=1, see cfg_get), text4k.c also takes over the game's
+ * text drawing and redraws the strings at the output resolution on top of cnc-ddraw's picture
+ * (crisp text).
  *
  * It also subclasses the game window to turn cnc-ddraw's maximize toggle (largest 4:3 window <->
  * native 800x600) into a normal Windows maximize/restore; see "maximize / restore" below.
@@ -46,6 +47,7 @@ static volatile DWORD g_logical_full = 1;  /* what the getter reports: the playe
 
 static HMODULE g_self, g_real_dsound;
 static char g_log_path[MAX_PATH];
+static char g_ini_path[MAX_PATH];
 static volatile LONG g_want_full = -1;    /* mode the game asked for at the last init */
 static volatile LONG g_pending;           /* a mode sync is due */
 static volatile DWORD g_pending_tick;
@@ -604,6 +606,17 @@ static void textlog_install(void)
 }
 #endif
 
+/* A setting: the environment variable CMFIX_<NAME> if set (harness, testing), else <name> in the
+   [cmfix] section of cmfix.ini next to this DLL (what players edit). Returns 0 if neither has it. */
+int cfg_get(const char *name, char *dst, int cap)
+{
+    char env[64];
+    wsprintfA(env, "CMFIX_%s", name);
+    if (GetEnvironmentVariableA(env, dst, cap))
+        return 1;
+    return GetPrivateProfileStringA("cmfix", name, "", dst, cap, g_ini_path) > 0;
+}
+
 int text4k_install(void);  /* text4k.c */
 
 static void install(void)
@@ -639,7 +652,7 @@ static void install(void)
 #ifndef CMFIX_TEXTLOG
     {
         char v[8] = "";
-        GetEnvironmentVariableA("CMFIX_TEXT4K", v, sizeof(v));
+        cfg_get("TEXT4K", v, sizeof(v));
         if (v[0] == '1')
             text4k_install();
     }
@@ -656,6 +669,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         GetModuleFileNameA(inst, g_log_path, MAX_PATH);
         slash = strrchr(g_log_path, '\\');
         lstrcpyA(slash ? slash + 1 : g_log_path, "cmfix.log");
+        lstrcpyA(g_ini_path, g_log_path);
+        lstrcpyA(g_ini_path + lstrlenA(g_ini_path) - 3, "ini");
         logf("cmfix loaded");
         install();
 #ifdef CMFIX_TEXTLOG
