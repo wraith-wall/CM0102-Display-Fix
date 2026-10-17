@@ -30,6 +30,9 @@ UNINSTALL
 Delete these files from the game folder: ddraw.dll, ddraw.ini, dsound.dll,
 cmfix.ini, cmfix.log, Shaders\omniscale\omniscale.glsl (and the Shaders folder
 if it is empty), README-cmfix.txt and the licenses folder.
+Without cnc-ddraw the game may not start in windowed mode on modern Windows:
+if it shows an error or a black window, set Screen Mode back to Full (or
+reinstall cmfix).
 
 SETTINGS
 - cmfix.ini: crisp text on/off (text4k=1/0), its font and size.
