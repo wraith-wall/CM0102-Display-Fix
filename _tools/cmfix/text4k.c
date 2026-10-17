@@ -16,7 +16,9 @@
  * older strings it overlaps.
  *
  * Left to the game (drawn low-res as before): strings with a caret (input fields), strings
- * with #hhhh# colour codes, and font 0 strings without letters/digits (arrow icons).
+ * with #hhhh# colour codes, font 0 strings without letters/digits (arrow icons), and every
+ * string while the "Traditional" fonts (bitmap .fnt, Arial) are selected: only "Futuristic"
+ * (T2K) is redrawn.
  *
  * Until the overlay has run once (cnc-ddraw renderer=opengl calling SwapBuffers), the game keeps
  * drawing its own glyphs, so another renderer just means low-res text, never missing text.
@@ -39,8 +41,7 @@ void logf(const char *fmt, ...);
 #define T_PANEL    0x005E5DF0  /* panel(x0, y0, x1, y1, mode, ...): dialog background, dimming */
 #define T_WIDTH    0x005E5AD0  /* text_width(short font, const char *s) */
 #define BACKBUF    (*(void **)0x00AEBDE4)
-#define FONT_MODE  (*(int *)0x009CC2C4)      /* -1: bitmap .fnt fonts, else T2K ("Futuristic") */
-#define FNT_TABLE  0x00AE1DAC                /* + id * 0x1404: .fnt font, first dword = line height */
+#define FONT_MODE  (*(int *)0x009CC2C4)      /* -1: bitmap .fnt fonts ("Traditional"), else T2K ("Futuristic") */
 #define GAME_W 800
 #define GAME_H 600
 
@@ -205,9 +206,20 @@ static int overlap(int ax, int ay, int aw, int ah, int bx, int by, int bw, int b
 
 static int line_height(int font)
 {
-    if (FONT_MODE == -1)
-        return *(int *)(FNT_TABLE + font * 0x1404);
     return kT2kLine[font];
+}
+
+/* Traditional fonts selected (in game, at any time): the game draws them itself; strings
+   recorded while Futuristic was on must not stay on top of its glyphs */
+static int g_scene_empty = 1;
+
+static void drop_all(void)
+{
+    int i;
+    for (i = 0; i < MAX_ITEMS; i++)
+        g_items[i].state = 0;
+    g_scene_empty = 1;
+    g_dirty = 1;
 }
 
 static void publish(void)
@@ -242,6 +254,11 @@ static int __cdecl on_draw(DWORD *a)
     InterlockedIncrement(&g_draws);
     if (!g_overlay_alive || !s || !*s || caret >= 0 || font < 0 || font > 7 || strlen(s) >= MAX_STR || strchr(s, '#'))
         return 0;
+    if (FONT_MODE == -1) {
+        if (!g_scene_empty)
+            drop_all();
+        return 0;
+    }
     for (i = 0; s[i]; i++)
         alnum |= IsCharAlphaNumericA(s[i]);
     if (font == 0 && !alnum)
@@ -289,6 +306,7 @@ static int __cdecl on_draw(DWORD *a)
     slot->covered = 0;
     slot->dim = 0;
     slot->state = 1;
+    g_scene_empty = 0;
     lstrcpynA(slot->s, s, MAX_STR);
     unlock_back(&l);
     g_dirty = 1;
@@ -527,6 +545,8 @@ static void __cdecl my_put(int x, int y, DWORD *saved)
             logf("text4k: put %d,%d %p: buffer changed since grab, not restoring", x, y, saved);
         return;
     }
+    if (FONT_MODE == -1)  /* grabbed while Futuristic was on; Traditional is left to the game */
+        return;
     if (g_debug)
         logf("text4k: put %d,%d %dx%d %p: restoring %d strings (\"%s\"...)", x, y, w, h, saved, v->n, v->items[0].s);
     if (!lock_back(&l))
@@ -804,20 +824,18 @@ static float g_y_off = 0.0f;      /* vertical tweak, game pixels */
 
 static const char *face_for(int font)
 {
-    if (FONT_MODE == -1)
-        return font <= 2 ? "Arial Narrow" : "Arial";
     return font <= 2 ? g_face_small : g_face_large;
 }
 
 static int em_for(int font, float scale)
 {
-    float pt = FONT_MODE == -1 ? line_height(font) * 0.75f : (float)kT2kPt[font];
-    return (int)(pt * g_em_k * scale + 0.5f);
+    return (int)(kT2kPt[font] * g_em_k * scale + 0.5f);
 }
 
 static Tex *get_tex(const SnapItem *it, float scale)
 {
-    int em = em_for(it->font, scale), i, x, y;
+    int em = em_for(it->font, scale), i, x, y, n;
+    WCHAR ws[MAX_STR];
     Tex *t = NULL, *lru = NULL;
     HFONT f, of;
     SIZE sz;
@@ -845,11 +863,15 @@ static Tex *get_tex(const SnapItem *it, float scale)
     }
     if (!g_dc)
         g_dc = CreateCompatibleDC(NULL);
-    f = CreateFontA(-em, 0, 0, 0, it->font >= 3 ? g_weight_large : FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+    /* the game's strings are Windows-1252 (Verón, Svärd, £), whatever the system ANSI code page
+       is: with DEFAULT_CHARSET and the A calls a Cyrillic system showed "Verуn", "Ј" */
+    n = MultiByteToWideChar(1252, 0, it->s, -1, ws, MAX_STR);
+    n = n > 0 ? n - 1 : 0;
+    f = CreateFontA(-em, 0, 0, 0, it->font >= 3 ? g_weight_large : FW_NORMAL, 0, 0, 0, ANSI_CHARSET,
                     OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, face_for(it->font));
     of = SelectObject(g_dc, f);
     GetTextMetricsA(g_dc, &tm);
-    GetTextExtentPoint32A(g_dc, it->s, lstrlenA(it->s), &sz);
+    GetTextExtentPoint32W(g_dc, ws, n, &sz);
     t->tw = sz.cx + 2;
     t->th = tm.tmHeight;
     t->ink_w = sz.cx;
@@ -865,7 +887,7 @@ static Tex *get_tex(const SnapItem *it, float scale)
     FillRect(g_dc, &rc, GetStockObject(BLACK_BRUSH));
     SetTextColor(g_dc, RGB(255, 255, 255));
     SetBkMode(g_dc, TRANSPARENT);
-    TextOutA(g_dc, 1, 0, it->s, lstrlenA(it->s));
+    TextOutW(g_dc, 1, 0, ws, n);
     GdiFlush();
     for (y = 0; y < t->th; y++)
         for (x = 0; x < t->tw; x++) {
