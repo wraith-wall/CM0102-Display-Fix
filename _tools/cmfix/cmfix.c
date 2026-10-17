@@ -18,6 +18,9 @@
  *     Since the real flag [0xAE319C] is now always 1 (it also selects the present path at
  *     0x5E2F8D and must stay 1), the getter is redirected to the mode the player chose.
  *
+ * With CMFIX_TEXT4K=1 in the environment, text4k.c also takes over the game's text drawing and
+ * redraws the strings at the output resolution on top of cnc-ddraw's picture (crisp text).
+ *
  * It also subclasses the game window to turn cnc-ddraw's maximize toggle (largest 4:3 window <->
  * native 800x600) into a normal Windows maximize/restore; see "maximize / restore" below.
  *
@@ -48,7 +51,7 @@ static volatile LONG g_pending;           /* a mode sync is due */
 static volatile DWORD g_pending_tick;
 
 
-static void logf(const char *fmt, ...)
+void logf(const char *fmt, ...)
 {
     char buf[512];
     va_list ap;
@@ -430,6 +433,179 @@ __declspec(naked) static void gfx_init_hook(void)
     }
 }
 
+#ifdef CMFIX_TEXTLOG
+/* ---------------------------------------------------------------- Phase 2b spike: text log */
+/*
+ * Temporary instrumentation (build with /DCMFIX_TEXTLOG): logs every call of the game's
+ *   0x5E5160  draw_string(x, y, font, color565, const char *s, caret)  - all glyphs go through it
+ *   0x5E6D80  draw_text_box(a1..a10)                                   - wraps/aligns, calls the above
+ * and a few graphics primitives (present / grab / put / rect, see GFX_*) to cmfix_text.log. Env CMFIX_TEXT=hide also skips draw_string (no glyphs drawn at all).
+ */
+#define TXT_DRAW     0x005E5160
+#define TXT_BOX      0x005E6D80
+static const BYTE kTxtDraw[8]    = {0x6A, 0xFF, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00}; /* push -1; mov eax, fs:[0] */
+static const BYTE kTxtBox[7]     = {0x6A, 0xFF, 0x68, 0x1E, 0xA9, 0x95, 0x00};       /* push -1; push 0x95A91E */
+static const BYTE kGfxPrologue[5] = {0xA1, 0x0C, 0xBE, 0xAE, 0x00};                  /* mov eax, [0xAEBE0C] */
+static char g_txt_path[MAX_PATH];
+static volatile LONG g_txt_seq, g_txt_lines;
+static DWORD g_txt_hide;
+
+static void txtf(const char *fmt, ...)
+{
+    char buf[700];
+    va_list ap;
+    HANDLE f;
+    DWORD n;
+    int len;
+    if (InterlockedIncrement(&g_txt_lines) > 200000)
+        return;
+    len = _snprintf(buf, 32, "%6ld %8lu ", InterlockedIncrement(&g_txt_seq), GetTickCount());
+    va_start(ap, fmt);
+    len += _vsnprintf(buf + len, sizeof(buf) - len - 3, fmt, ap);
+    va_end(ap);
+    if (len < 0 || len > (int)sizeof(buf) - 3)
+        len = sizeof(buf) - 3;
+    buf[len++] = '\r';
+    buf[len++] = '\n';
+    f = CreateFileA(g_txt_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, 0, NULL);
+    if (f != INVALID_HANDLE_VALUE) {
+        WriteFile(f, buf, len, &n, NULL);
+        CloseHandle(f);
+    }
+}
+
+static void safe_str(char *dst, int cap, const char *s)
+{
+    int i = 0;
+    if (!s || IsBadReadPtr(s, 1)) {
+        lstrcpyA(dst, "(null)");
+        return;
+    }
+    for (; s[i] && i < cap - 1; i++)
+        dst[i] = (s[i] == '"' || (BYTE)s[i] < 0x20) ? '?' : s[i];
+    dst[i] = 0;
+}
+
+static void __cdecl on_txt_draw(DWORD *a, DWORD ret)
+{
+    char s[400];
+    safe_str(s, sizeof(s), (const char *)a[4]);
+    txtf("DRAW x=%ld y=%ld font=%d col=%04X caret=%ld ret=%08lX surf=%p \"%s\"",
+         (long)a[0], (long)a[1], (short)a[2], (unsigned)(a[3] & 0xFFFF), (long)a[5], ret,
+         *(void **)0x00AEBDE4u, s);
+}
+
+static void __cdecl on_txt_box(DWORD *a, DWORD ret)
+{
+    char s[400];
+    safe_str(s, sizeof(s), (const char *)a[7]);
+    txtf("BOX  %ld %ld %ld %ld %ld font=%d a7=%08lX a9=%08lX a10=%08lX ret=%08lX \"%s\"",
+         (long)a[0], (long)a[1], (long)a[2], (long)a[3], (long)a[4], (short)a[5], a[6], a[8], a[9], ret, s);
+}
+
+__declspec(naked) static void txt_draw_hook(void)
+{
+    __asm {
+        pushad
+        push dword ptr [esp + 0x20]          /* return address */
+        lea eax, [esp + 0x28]                /* &arg1 */
+        push eax
+        call on_txt_draw
+        add esp, 8
+        popad
+        cmp g_txt_hide, 0
+        jne skip
+        push -1
+        mov eax, dword ptr fs:[0]
+        push TXT_DRAW + 8
+        ret
+    skip:
+        ret
+    }
+}
+
+__declspec(naked) static void txt_box_hook(void)
+{
+    __asm {
+        pushad
+        push dword ptr [esp + 0x20]
+        lea eax, [esp + 0x28]
+        push eax
+        call on_txt_box
+        add esp, 8
+        popad
+        push -1
+        push 0x0095A91E
+        push TXT_BOX + 7
+        ret
+    }
+}
+
+/* graphics primitives that start with "mov eax, [0xAEBE0C]" (the "graphics off" flag) */
+static void __cdecl on_gfx(int tag, DWORD *a, DWORD ret)
+{
+    static const char *names[] = {"PRES", "GRAB", "PUT ", "RECT"};
+    if (tag == 2) {  /* put(x, y, saved*) - saved = {w, h, bytes, pixels} */
+        DWORD *sv = (DWORD *)a[2];
+        txtf("%s %ld %ld w=%ld h=%ld ret=%08lX", names[tag], (long)a[0], (long)a[1],
+             sv ? (long)sv[0] : -1, sv ? (long)sv[1] : -1, ret);
+        return;
+    }
+    txtf("%s %ld %ld %ld %ld %08lX %08lX ret=%08lX", names[tag], (long)a[0], (long)a[1], (long)a[2], (long)a[3],
+         a[4], a[5], ret);
+}
+
+#define GFX_HOOK(name, addr, tag)                                                                  __declspec(naked) static void name(void)                                                       {                                                                                                  __asm pushad                                                                                   __asm push dword ptr [esp + 0x20]                                                              __asm lea eax, [esp + 0x28]                                                                    __asm push eax                                                                                 __asm push tag                                                                                 __asm call on_gfx                                                                              __asm add esp, 12                                                                              __asm popad                                                                                    __asm mov eax, dword ptr ds:[0x00AEBE0C]                                                       __asm push addr + 5                                                                            __asm ret                                                                                  }
+#define GFX_PRESENT 0x005E2EB0  /* present_rect(x0, y0, x1, y1): back buffer -> primary */
+#define GFX_GRAB    0x005E3DD0  /* grab(x0, y0, x1, y1, saved*): back buffer rect -> malloc copy */
+#define GFX_PUT     0x005E3FD0  /* put(x, y, saved*): copy -> back buffer */
+#define GFX_RECT    0x005E3730  /* rect/line primitive (x0, y0, x1, y1, mode, color) */
+GFX_HOOK(gfx_present_hook, GFX_PRESENT, 0)
+GFX_HOOK(gfx_grab_hook, GFX_GRAB, 1)
+GFX_HOOK(gfx_put_hook, GFX_PUT, 2)
+GFX_HOOK(gfx_rect_hook, GFX_RECT, 3)
+
+static void patch_jmp(DWORD at, void *to, int len)
+{
+    BYTE *p = (BYTE *)at;
+    DWORD old;
+    int i;
+    VirtualProtect(p, len, PAGE_EXECUTE_READWRITE, &old);
+    p[0] = 0xE9;
+    *(DWORD *)(p + 1) = (DWORD)to - (at + 5);
+    for (i = 5; i < len; i++)
+        p[i] = 0x90;
+    VirtualProtect(p, len, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, len);
+}
+
+static void textlog_install(void)
+{
+    char v[16] = "";
+    char *slash;
+    lstrcpyA(g_txt_path, g_log_path);
+    slash = strrchr(g_txt_path, '\\');
+    lstrcpyA(slash ? slash + 1 : g_txt_path, "cmfix_text.log");
+    GetEnvironmentVariableA("CMFIX_TEXT", v, sizeof(v));
+    g_txt_hide = !lstrcmpiA(v, "hide");
+    if (memcmp((void *)TXT_DRAW, kTxtDraw, 8) || memcmp((void *)TXT_BOX, kTxtBox, 7) ||
+        memcmp((void *)GFX_PRESENT, kGfxPrologue, 5) || memcmp((void *)GFX_GRAB, kGfxPrologue, 5) ||
+        memcmp((void *)GFX_PUT, kGfxPrologue, 5) || memcmp((void *)GFX_RECT, kGfxPrologue, 5)) {
+        logf("textlog: code does not match 3.9.68; not hooking");
+        return;
+    }
+    patch_jmp(TXT_DRAW, txt_draw_hook, 8);
+    patch_jmp(TXT_BOX, txt_box_hook, 7);
+    patch_jmp(GFX_PRESENT, gfx_present_hook, 5);
+    patch_jmp(GFX_GRAB, gfx_grab_hook, 5);
+    patch_jmp(GFX_PUT, gfx_put_hook, 5);
+    patch_jmp(GFX_RECT, gfx_rect_hook, 5);
+    logf("textlog: hooks installed, hide=%lu", g_txt_hide);
+}
+#endif
+
+int text4k_install(void);  /* text4k.c */
+
 static void install(void)
 {
     BYTE *p = (BYTE *)GFX_INIT;
@@ -460,6 +636,14 @@ static void install(void)
     }
     CloseHandle(CreateThread(NULL, 0, worker, NULL, 0, NULL));
     logf("hooks installed at %08X and %08X", GFX_INIT, IS_FULL_GETTER);
+#ifndef CMFIX_TEXTLOG
+    {
+        char v[8] = "";
+        GetEnvironmentVariableA("CMFIX_TEXT4K", v, sizeof(v));
+        if (v[0] == '1')
+            text4k_install();
+    }
+#endif
 }
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
@@ -474,6 +658,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
         lstrcpyA(slash ? slash + 1 : g_log_path, "cmfix.log");
         logf("cmfix loaded");
         install();
+#ifdef CMFIX_TEXTLOG
+        textlog_install();
+#endif
     }
     return TRUE;
 }

@@ -128,20 +128,24 @@ def restore_display_if_changed(before):
     return True
 
 
-def launch(exe=C.GAME_EXE, args="-windowed", timeout=60.0, keep_virtualization=False, settle=2.0, compat=None):
-    """compat: Windows compatibility layer(s) for this process only, via __COMPAT_LAYER (e.g. "16BITCOLOR")."""
+def launch(exe=C.GAME_EXE, args="-windowed", timeout=60.0, keep_virtualization=False, settle=2.0, compat=None, env=None):
+    """compat: Windows compatibility layer(s) for this process only, via __COMPAT_LAYER (e.g. "16BITCOLOR").
+    env: extra environment variables for the game process only (e.g. {"CMFIX_TEXT4K": "1"})."""
     if running_pid():
         raise SystemExit("game already running; use 'game.py kill' first")
     exe = os.path.abspath(os.path.join(C.GAME_DIR, exe))
     disp_before = C.display_snapshot()
-    pi = create_suspended(exe, args, C.GAME_DIR, {"__COMPAT_LAYER": compat} if compat else None)
+    extra = dict(env or {})
+    if compat:
+        extra["__COMPAT_LAYER"] = compat
+    pi = create_suspended(exe, args, C.GAME_DIR, extra or None)
     pid = pi.dwProcessId
     try:
         virt = _token_virtualization(pi.hProcess, None if keep_virtualization else False)
     except OSError as e:
         C.kernel32.TerminateProcess(pi.hProcess, 1)
         raise SystemExit(f"could not disable registry virtualization ({e}); game terminated before it ran")
-    C.log(f"created pid={pid} suspended, cmd={exe} {args}, compat={compat}, registry virtualization={'ON' if virt else 'OFF'}")
+    C.log(f"created pid={pid} suspended, cmd={exe} {args}, compat={compat}, env={env or {}}, registry virtualization={'ON' if virt else 'OFF'}")
     C.kernel32.ResumeThread(pi.hThread)
     C.kernel32.CloseHandle(pi.hThread)
     C.kernel32.CloseHandle(pi.hProcess)

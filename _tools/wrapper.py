@@ -12,6 +12,7 @@ Profile JSON:
    "extra": [{"src": "_tools/cmfix/build/dsound.dll", "dst": "dsound.dll"}],  // more files, relative to the dev folder
    "cleanup": ["cmfix.log"],                             // files the wrapper creates at runtime; removed on uninstall
    "keep_screen_mode": true,                             // play.py: don't force Screen Mode = Full
+   "env": {"CMFIX_TEXT4K": "1"},                         // play.py / scenario.py: extra environment for the game
    "extends": "other_profile"}                           // optional: inherit + override "set"
 
 Everything installed is recorded in _logs\\wrapper_installed.json (path + sha256), and

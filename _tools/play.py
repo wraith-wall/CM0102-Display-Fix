@@ -2,6 +2,7 @@
 
   python play.py                        # = cnc_play_fix: in-game Screen Mode picks fullscreen 4:3 or a
                                         #   resizable window (cmfix dsound.dll); Alt+Enter toggles too
+  python play.py cnc_play_text4k        # cnc_play_fix + crisp text redrawn at the output resolution
   python play.py cnc_play               # without cmfix: starts fullscreen, Alt+Enter only
   python play.py cnc_window             # starts as a 2400x1800 window instead
   python play.py cmp_F_omniscale        # any _tools\\wrappers\\<profile>.json
@@ -38,7 +39,7 @@ def main():
     prof = wrapper.install(a.profile)
     if not prof.get("keep_screen_mode"):
         cfg.set_screen("full")
-    game.launch(exe="cm0102.exe", args="")
+    game.launch(exe="cm0102.exe", args="", env=prof.get("env"))
     print("running; quit from the game menu (Exit Game) or: python game.py kill")
 
 

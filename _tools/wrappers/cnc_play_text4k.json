@@ -1,0 +1,2 @@
+{"extends": "cnc_play_fix",
+ "env": {"CMFIX_TEXT4K": "1"}}

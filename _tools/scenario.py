@@ -157,14 +157,17 @@ def run(path, keep_running=False):
     MAP = sc.get("map", "dpi")
     REFS.NEED_OVERRIDE = sc.get("ref_need")
     try:
+        launch = dict(sc.get("launch", {}))
         if sc.get("wrapper"):
-            WRAP.install(sc["wrapper"])
+            prof = WRAP.install(sc["wrapper"])
             summary["wrapper"] = WRAP.installed()
+            if prof.get("env"):
+                launch["env"] = dict(prof["env"], **launch.get("env", {}))
         elif WRAP.installed():
             WRAP.uninstall()
         if sc.get("screen_mode"):
             CFG.set_screen(sc["screen_mode"])
-        st = game.launch(**sc.get("launch", {}))
+        st = game.launch(**launch)
         summary["launch"] = st
         hwnd = st["hwnd"]
         for i, step in enumerate(sc.get("steps", [])):
