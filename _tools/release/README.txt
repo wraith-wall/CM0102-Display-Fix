@@ -19,7 +19,9 @@ REQUIREMENTS
 - A graphics card with OpenGL (any reasonably recent one).
 - For crisp text: the font "Eras Demi ITC" (installed with Microsoft Office).
   Without it the game still runs scaled, just with the normal pixel text.
-- Tested on Windows 11.
+- Tested on Windows 11 with a 4K monitor (3840x2160 at 200% scaling).
+  Other resolutions and Windows scaling levels should work the same way but
+  have not been tested yet.
 
 INSTALL
 1. If the game folder already has ddraw.dll, ddraw.ini or dsound.dll (another

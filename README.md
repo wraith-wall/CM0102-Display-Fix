@@ -20,7 +20,7 @@ The game draws an 800×600 picture. On a 1440p or 4K monitor Windows shows it as
 - Championship Manager 01/02 patched to **3.9.68**, started through `cm0102.exe` (`cm0102_GDI.exe` is not supported).
 - A graphics card with OpenGL.
 - For crisp text: the font **Eras Demi ITC**, which comes with Microsoft Office. Without it the game still runs scaled, just with the normal pixel text.
-- Tested on Windows 11.
+- Tested on Windows 11 with a 4K monitor (3840×2160 at 200% scaling). Other resolutions and Windows scaling levels should work the same way but have not been tested yet.
 
 ## Install
 
