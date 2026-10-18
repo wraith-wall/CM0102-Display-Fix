@@ -60,6 +60,7 @@ def main():
         "dsound.dll": open(os.path.join(CMFIX, "build", "dsound.dll"), "rb").read(),
         "cmfix.ini": open(os.path.join(CMFIX, "cmfix.ini"), "rb").read(),
         "README-CM0102-Display-Fix.txt": readme.encode("utf-8"),
+        "licenses/CM0102-Display-Fix-LICENSE.txt": open(os.path.join(C.GAME_DIR, "LICENSE"), "rb").read(),
         "licenses/cnc-ddraw-LICENSE.txt": open(os.path.join(HERE, "licenses", "cnc-ddraw-LICENSE.txt"), "rb").read(),
     }
     os.makedirs(OUT, exist_ok=True)

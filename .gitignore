@@ -1,6 +1,7 @@
 # Only harness tooling and docs are tracked; game files, captures and logs are not.
 /*
 !/.gitignore
+!/LICENSE
 !/_tools/
 !/_docs/
 __pycache__/

@@ -64,5 +64,7 @@ TROUBLESHOOTING
   published with the release.
 
 CREDITS AND LICENSES
+- CM0102 Display Fix (cmfix) by wraith-wall, MIT license:
+  licenses\CM0102-Display-Fix-LICENSE.txt
 - cnc-ddraw by FunkyFr3sh, MIT license: licenses\cnc-ddraw-LICENSE.txt
 - OmniScale shader by Lior Halphon, MIT license (notice inside the shader file)

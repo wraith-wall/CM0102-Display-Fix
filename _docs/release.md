@@ -13,6 +13,7 @@
 | `Shaders/omniscale/omniscale.glsl` | из пакета шейдеров cnc-ddraw, лицензия MIT внутри файла |
 | `dsound.dll`, `cmfix.ini` | `_tools\cmfix` |
 | `README-CM0102-Display-Fix.txt` | [_tools/release/README.txt](../_tools/release/README.txt), `{version}` подставляется |
+| `licenses/CM0102-Display-Fix-LICENSE.txt` | MIT, [LICENSE](../LICENSE) в корне репозитория (wraith-wall) |
 | `licenses/cnc-ddraw-LICENSE.txt` | MIT, из репозитория cnc-ddraw |
 
 Профиль `release` — это `cnc_play_fix` плюс `cmfix.ini` (text4k включается файлом, без переменной окружения) и `width=0`/`height=0` вместо 2400×1800 из dev-профилей (такое окно не влезло бы на экран 1080p). cnc-ddraw тогда открывает окно 800×600, и cmfix один раз при первом появлении окна такого размера увеличивает его до самого большого 4:3, которое помещается в 85% рабочей области монитора (на 4K с рабочей областью 3840×2064 это 2336×1752). Если `width`/`height` в `ddraw.ini` заданы (в `[ddraw]` или `[cm0102]`), cmfix окно не трогает, поэтому dev-профили с 2400×1800 ведут себя как раньше. Тот же набор ставится в dev-папку командой `python _tools\play.py release`.
@@ -26,7 +27,7 @@
 
 Перед публикацией не решено и не проверено:
 
-- лицензия на свой код, страница с исходниками (README ссылается только на хеши);
+- страница с исходниками (README ссылается только на хеши);
 - проверка архива на VirusTotal.
 
 ## На потом
