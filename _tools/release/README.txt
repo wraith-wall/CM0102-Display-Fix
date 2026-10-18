@@ -1,5 +1,6 @@
-Championship Manager 01/02 - sharp picture and crisp text on modern screens
-cmfix {version}
+CM0102 Display Fix {version}
+Championship Manager 01/02 on modern screens: sharp scaling up to 4K, crisp
+text, working fullscreen and windowed modes. (Technical name: cmfix.)
 
 WHAT IT DOES
 - Scales the game's 800x600 picture to your screen with cnc-ddraw (OpenGL,
@@ -29,7 +30,7 @@ INSTALL
 UNINSTALL
 Delete these files from the game folder: ddraw.dll, ddraw.ini, dsound.dll,
 cmfix.ini, cmfix.log, Shaders\omniscale\omniscale.glsl (and the Shaders folder
-if it is empty), README-cmfix.txt and the licenses folder.
+if it is empty), README-CM0102-Display-Fix.txt and the licenses folder.
 Without cnc-ddraw the game may not start in windowed mode on modern Windows:
 if it shows an error or a black window, set Screen Mode back to Full (or
 reinstall cmfix).

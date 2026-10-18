@@ -1,6 +1,6 @@
-"""Build the player release zip: cnc-ddraw + cmfix, to be unpacked next to cm0102.exe.
+"""Build the player release zip of "CM0102 Display Fix" (cnc-ddraw + cmfix), unpacked next to cm0102.exe.
 
-  python release.py              # builds cmfix, writes _release\\cmfix-<version>.zip + .sha256.txt
+  python release.py              # builds cmfix, writes _release\\CM0102-Display-Fix-<version>.zip + .sha256.txt
   python release.py --no-build   # use _tools\\cmfix\\build\\dsound.dll as it is
 
 ddraw.ini is cnc-ddraw's own ini with the [ddraw] keys of the wrapper profile
@@ -59,11 +59,11 @@ def main():
         SHADER: open(os.path.join(base, SHADER), "rb").read(),
         "dsound.dll": open(os.path.join(CMFIX, "build", "dsound.dll"), "rb").read(),
         "cmfix.ini": open(os.path.join(CMFIX, "cmfix.ini"), "rb").read(),
-        "README-cmfix.txt": readme.encode("utf-8"),
+        "README-CM0102-Display-Fix.txt": readme.encode("utf-8"),
         "licenses/cnc-ddraw-LICENSE.txt": open(os.path.join(HERE, "licenses", "cnc-ddraw-LICENSE.txt"), "rb").read(),
     }
     os.makedirs(OUT, exist_ok=True)
-    name = f"cmfix-{ver}"
+    name = f"CM0102-Display-Fix-{ver}"
     zpath = os.path.join(OUT, name + ".zip")
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for path, data in files.items():
