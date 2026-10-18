@@ -1,6 +1,6 @@
 # CM0102 Display Fix
 
-Championship Manager 01/02 on modern screens: sharp scaling up to 4K, crisp text, and fullscreen and windowed modes that work.
+Championship Manager 01/02 on modern screens: instant Alt+Tab without flicker, a comfortable resizable window, sharp scaling up to 4K and crisp text.
 
 The game draws an 800×600 picture. On a 1440p or 4K monitor Windows shows it as a tiny window or a blurry stretch, and the in-game *Windowed* mode often fails outright. This mod fixes that without changing the game's exe on disk.
 
@@ -12,7 +12,8 @@ The game draws an 800×600 picture. On a 1440p or 4K monitor Windows shows it as
 
 - **Sharp scaling.** [cnc-ddraw](https://github.com/FunkyFr3sh/cnc-ddraw) (OpenGL, OmniScale shader) scales the 800×600 frame to your screen, keeping 4:3 with black bars.
 - **Crisp text.** The game's text is drawn again at your screen's resolution with a TrueType font, instead of being scaled up from 800×600. This covers the default *Futuristic* fonts. With *Traditional* fonts the game draws its text as before.
-- **Screen Mode works.** Game Settings → Screen Mode: *Full* is borderless fullscreen and *Windowed* is a resizable window. Alt+Enter switches between them, and the maximize button works like in any other window. The first window is sized to fit your monitor.
+- **Alt+Tab just works.** Fullscreen is borderless, so the monitor never switches display modes: no black screens and no flicker on a 4K display when you Alt+Tab to a browser or Discord and back.
+- **Comfortable windowed play.** Game Settings → Screen Mode → *Windowed* opens a window sized to fit your monitor. Drag it to any size or maximize it like any other window, and the picture scales with it. The mouse is not locked inside the window. Alt+Enter switches between window and fullscreen.
 - **Nothing changes on disk.** The patching happens in memory when the game starts. Each hook is installed only if the game code there is the original 3.9.68 code, otherwise that part turns itself off.
 
 ## Requirements
