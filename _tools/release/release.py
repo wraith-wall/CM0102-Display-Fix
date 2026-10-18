@@ -6,7 +6,7 @@
 ddraw.ini is cnc-ddraw's own ini with the [ddraw] keys of the wrapper profile
 _tools\\wrappers\\release.json (the same profile `python play.py release` installs, so the
 release can be tried in the dev folder exactly as players get it). The version comes from
-CMFIX_VERSION in cmfix.c.
+CMFIX_VERSION in cmfix\\version.h.
 """
 import argparse
 import hashlib
@@ -28,7 +28,7 @@ SHADER = "Shaders/omniscale/omniscale.glsl"
 
 
 def version():
-    with open(os.path.join(CMFIX, "cmfix.c"), encoding="utf-8") as f:
+    with open(os.path.join(CMFIX, "version.h"), encoding="utf-8") as f:
         return re.search(r'#define CMFIX_VERSION\s+"([^"]+)"', f.read()).group(1)
 
 

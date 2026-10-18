@@ -34,7 +34,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#define CMFIX_VERSION   "0.1.0"  /* release.py reads it from here */
+#include "version.h"
 
 #define GFX_INIT        0x005E2620u
 #define GFX_INIT_RET    0x005E2625u
