@@ -324,6 +324,26 @@ static void publish(void)
     g_dirty = 0;
 }
 
+/* the arrow icons: font 0 strings of '(' .. '/', glyphs of the game's Data\symbol.ttf ("SI Symbol":
+   ( ) big left/right arrows, * + small left/right, , - up/down, . / double left/right) */
+static int g_symbol_ok;
+#define SYMBOL_FACE "SI Symbol"
+
+static int is_symbol(int font, const char *s)
+{
+    int any = 0;
+    if (font != 0)
+        return 0;
+    for (; *s; s++) {
+        if (*s == ' ')
+            continue;
+        if (*s < '(' || *s > '/')
+            return 0;
+        any = 1;
+    }
+    return any;
+}
+
 /* digits only: a score or a number in a box */
 static int is_number(const char *s)
 {
@@ -363,7 +383,7 @@ static int on_draw_(DWORD *a)
     }
     for (i = 0; s[i]; i++)
         alnum |= IsCharAlphaNumericA(s[i]);
-    if (font == 0 && !alnum)
+    if (font == 0 && !alnum && !(g_symbol_ok && is_symbol(font, s)))
         return 0;
     {
         /* the game aligns with spaces (a score is "2    ", ":", "    3"; menu items are indented):
@@ -1018,7 +1038,7 @@ static int em_for(int font, float scale)
 
 static Tex *get_tex(const SnapItem *it, float scale)
 {
-    int em = em_for(it->font, scale), i, x, y, n;
+    int em = em_for(it->font, scale), i, x, y, n, sym;
     WCHAR ws[MAX_STR];
     Tex *t = NULL, *lru = NULL;
     HFONT f, of;
@@ -1051,8 +1071,11 @@ static Tex *get_tex(const SnapItem *it, float scale)
        is: with DEFAULT_CHARSET and the A calls a Cyrillic system showed "Verуn", "Ј" */
     n = MultiByteToWideChar(1252, 0, it->s, -1, ws, MAX_STR);
     n = n > 0 ? n - 1 : 0;
-    f = CreateFontA(-em, 0, 0, 0, it->font >= 3 ? g_weight_large : FW_NORMAL, 0, 0, 0, ANSI_CHARSET,
-                    OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, face_for(it->font));
+    sym = is_symbol(it->font, it->s);  /* its arrows are at plain Unicode '(' .. '/', not a symbol
+                                          charset: asking for SYMBOL_CHARSET got Wingdings */
+    f = CreateFontA(-em, 0, 0, 0, it->font >= 3 ? g_weight_large : FW_NORMAL, 0, 0, 0,
+                    sym ? DEFAULT_CHARSET : ANSI_CHARSET, OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS,
+                    ANTIALIASED_QUALITY, DEFAULT_PITCH, sym ? SYMBOL_FACE : face_for(it->font));
     of = SelectObject(g_dc, f);
     GetTextMetricsA(g_dc, &tm);
     GetTextExtentPoint32W(g_dc, ws, n, &sz);
@@ -1209,7 +1232,8 @@ static void overlay(void)
             fit = 1.0f;
         if (it->align == ALIGN_RIGHT)
             x0 = (it->x + it->w) * sx - t->ink_w * fit - fit;
-        else if (it->align == ALIGN_LEFT || t->ink_w <= gw || !is_number(it->s))
+        else if (it->align == ALIGN_LEFT ||
+                 ((t->ink_w <= gw || !is_number(it->s)) && !is_symbol(it->font, it->s)))
             x0 = it->x * sx - fit;
         else
             x0 = (it->x + it->w * 0.5f) * sx - t->ink_w * 0.5f - 1.0f;
@@ -1385,6 +1409,15 @@ int text4k_install(void)
     if (!font_installed(g_face_large)) {
         logf("text4k: font \"%s\" is not installed (TrueType); using \"%s\" for titles", g_face_large, g_face_small);
         lstrcpynA(g_face_large, g_face_small, LF_FACESIZE);
+    }
+    {
+        /* the arrow icons' own font, for this process only */
+        char path[MAX_PATH];
+        GetModuleFileNameA(NULL, path, MAX_PATH);
+        lstrcpyA(strrchr(path, '\\') + 1, "Data\\symbol.ttf");
+        g_symbol_ok = AddFontResourceExA(path, FR_PRIVATE, 0) > 0 && font_installed(SYMBOL_FACE);
+        if (!g_symbol_ok)
+            logf("text4k: %s not loaded; arrow icons left to the game", path);
     }
     InitializeCriticalSection(&g_snap_cs);
     QueryPerformanceFrequency(&g_qpf);
