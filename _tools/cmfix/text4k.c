@@ -96,6 +96,21 @@ static SnapItem g_snap[MAX_ITEMS];
 static int g_snap_n;
 static volatile LONG g_snap_ver;
 static volatile LONG g_draws, g_kept, g_presents;
+static volatile LONG g_hook_us;  /* time spent in on_draw/on_present, microseconds (game thread) */
+static LARGE_INTEGER g_qpf;
+
+static LONGLONG qpc(void)
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+static void hook_time(LONGLONG t0)
+{
+    if (g_qpf.QuadPart)
+        InterlockedExchangeAdd(&g_hook_us, (LONG)((qpc() - t0) * 1000000 / g_qpf.QuadPart));
+}
 static int g_debug;
 static DWORD g_blend_epoch;
 static volatile LONG g_probe_n, g_probe_armed;  /* debug probe, see probe_install */
@@ -249,7 +264,7 @@ static void publish(void)
 }
 
 /* returns 1 when the string was taken over (the game must not draw it) */
-static int __cdecl on_draw(DWORD *a)
+static int on_draw_(DWORD *a)
 {
     int x = (int)a[0], y = (int)a[1], font = (short)a[2], caret = (int)a[5], w, h, i, alnum = 0;
     const char *s = (const char *)a[4];
@@ -332,7 +347,7 @@ static int __cdecl on_draw(DWORD *a)
     return 1;
 }
 
-static void __cdecl on_present(DWORD *a)
+static void on_present_(DWORD *a)
 {
     int x0 = (int)a[0], y0 = (int)a[1], x1 = (int)a[2], y1 = (int)a[3], i;
     Locked l;
@@ -362,6 +377,21 @@ static void __cdecl on_present(DWORD *a)
     g_gen++;
     if (g_dirty)
         publish();
+}
+
+static int __cdecl on_draw(DWORD *a)
+{
+    LONGLONG t0 = qpc();
+    int r = on_draw_(a);
+    hook_time(t0);
+    return r;
+}
+
+static void __cdecl on_present(DWORD *a)
+{
+    LONGLONG t0 = qpc();
+    on_present_(a);
+    hook_time(t0);
 }
 
 __declspec(naked) static void draw_hook(void)
@@ -421,6 +451,7 @@ typedef struct {
 } Saved;
 static Saved g_saved[MAX_SAVED];
 static DWORD g_saved_stamp;
+static int g_last_grab[4];  /* rect of the last grab: a popup saves what is under it, then draws its panel there */
 
 static DWORD saved_hash(const DWORD *sv)
 {
@@ -513,6 +544,7 @@ static void *__cdecl my_grab(int x0, int y0, int x1, int y1, void *saved)
     v->hash = saved_hash((DWORD *)r);
     v->epoch = g_blend_epoch;
     unlock_back(&l);
+    g_last_grab[0] = x0; g_last_grab[1] = y0; g_last_grab[2] = x1; g_last_grab[3] = y1;
     if (g_debug)
         logf("text4k: grab %d,%d-%d,%d -> %p, %d strings", x0, y0, x1, y1, r, n);
     return r;
@@ -593,7 +625,8 @@ static void __cdecl my_put(int x, int y, DWORD *saved)
  *   0x5E5DF0 panel(x0, y0, x1, y1, flags, colour) with flag 0x10: a (translucent) textured panel,
  *       the body of dialogs and popup menus. Over a background of nearly the same colour (the dark
  *       green Team Instructions over the dark green tactics pitch) it leaves the pixels as they
- *       were, so the pixel check cannot see it: strings under a large one are covered outright.
+ *       were, so the pixel check cannot see it: strings under a large one are covered outright, and
+ *       under any one drawn over the rect grabbed just before (a popup: the View menu is 126x190).
  *       Other flags (1, frames, gradients) are drawn over labels that stay visible: ignored.
  * Both are undone when pixels saved before them are put back (the dialog closing).
  */
@@ -603,8 +636,12 @@ static Fn6 g_orig_panel, g_orig_dim;
 static int __cdecl my_panel(int x0, int y0, int x1, int y1, int flags, int colour)
 {
     int r = g_orig_panel(x0, y0, x1, y1, flags, colour), i, n = 0;
-    if (!(flags & 0x10) || (x1 - x0 + 1) * (y1 - y0 + 1) < 200 * 150)
+    int popup = g_last_grab[0] == x0 && g_last_grab[1] == y0 && g_last_grab[2] == x1 && g_last_grab[3] == y1;
+    if (!(flags & 0x10) || (!popup && (x1 - x0 + 1) * (y1 - y0 + 1) < 200 * 150)) {
+        if (g_debug && (flags & 0x10))
+            logf("text4k: panel %d,%d-%d,%d flags %X: small, not covering", x0, y0, x1, y1, flags);
         return r;
+    }
     g_blend_epoch++;
     for (i = 0; i < MAX_ITEMS; i++) {
         Item *it = &g_items[i];
@@ -961,10 +998,23 @@ static void overlay(void)
         LeaveCriticalSection(&g_snap_cs);
     }
     glGetIntegerv_(GL_VIEWPORT, vp);
-    if (logged < 3 || (g_frame % 600) == 0) {
-        logf("text4k: frame %lu viewport %d,%d %dx%d, items %d (draws %ld kept %ld presents %ld)",
-             g_frame, vp[0], vp[1], vp[2], vp[3], g_draw_n, g_draws, g_kept, g_presents);
-        logged++;
+    {
+        /* the first frames, then every 5 s in which the game thread spent 100+ ms in the hooks
+           (a slow screen or load would show up here) */
+        static DWORD last_tick;
+        static LONG last_us;
+        DWORD now = GetTickCount();
+        LONG us = g_hook_us;
+        if (logged < 3 || (now - last_tick >= 5000 && us - last_us >= 100000)) {
+            logf("text4k: frame %lu viewport %d,%d %dx%d, items %d (draws %ld kept %ld presents %ld, %ld ms in hooks, +%ld)",
+                 g_frame, vp[0], vp[1], vp[2], vp[3], g_draw_n, g_draws, g_kept, g_presents, us / 1000,
+                 (us - last_us) / 1000);
+            logged++;
+        }
+        if (now - last_tick >= 5000) {
+            last_tick = now;
+            last_us = us;
+        }
     }
     if (!g_draw_n || vp[2] <= 0 || vp[3] <= 0)
         return;
@@ -1008,9 +1058,16 @@ static void overlay(void)
         Tex *t = get_tex(it, sy);
         WORD c = it->color;
         float x0, y0, x1, y1, fit, gw = it->w * sx;
-        /* keep the game's layout: never wider than the game's own string width */
+        /* keep the game's layout: never wider than the game's own string width. Except very short
+           strings (scores, numbers in boxes): the game's narrow "1" squeezed a whole Eras "1" to a
+           sliver, so these keep their own width and are centred on the game's box instead */
         fit = t->ink_w > gw ? gw / t->ink_w : 1.0f;
-        x0 = it->x * sx - fit;
+        if (fit < 1.0f && strlen(it->s) <= 3) {
+            fit = 1.0f;
+            x0 = (it->x + it->w * 0.5f) * sx - t->ink_w * 0.5f - 1.0f;
+        } else {
+            x0 = it->x * sx - fit;
+        }
         x1 = x0 + t->tw * fit;
         y0 = (it->y + g_y_off) * sy + (it->h * sy - t->th) * 0.5f;
         y1 = y0 + t->th;
@@ -1182,6 +1239,7 @@ int text4k_install(void)
         lstrcpynA(g_face_large, g_face_small, LF_FACESIZE);
     }
     InitializeCriticalSection(&g_snap_cs);
+    QueryPerformanceFrequency(&g_qpf);
     if (!hook_ddraw_swap()) {
         logf("text4k: SwapBuffers import not found in ddraw.dll; off");
         return 0;
