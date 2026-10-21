@@ -37,7 +37,7 @@ The patch sets of [CM0102Patcher](https://github.com/nckstwrt/CM0102Patcher) and
 
 ## Known limitations
 
-- Some text stays low-res: input fields while you type, text with embedded colours, and the arrow icons.
+- Some text stays low-res: input fields while you type, and text with embedded colours.
 - Big titles use Eras instead of the game's HandelGothic.
 - Behind modal dialogs the menu text underneath is hidden instead of dimmed.
 - With resolution patches there is no crisp text (yet).

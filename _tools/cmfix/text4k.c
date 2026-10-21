@@ -16,7 +16,8 @@
  * older strings it overlaps.
  *
  * Left to the game (drawn low-res as before): strings with a caret (input fields), strings
- * with #hhhh# colour codes, font 0 strings without letters/digits (arrow icons), and every
+ * with #hhhh# colour codes, font 0 strings without letters/digits other than the arrow icons
+ * (those are drawn with the game's own Data\symbol.ttf), and every
  * string while the "Traditional" fonts (bitmap .fnt, Arial) are selected: only "Futuristic"
  * (T2K) is redrawn.
  *
