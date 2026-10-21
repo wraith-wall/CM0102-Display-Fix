@@ -72,6 +72,9 @@ typedef struct {
     DWORD gen;        /* present generation when recorded */
     Mask mask;        /* strips still showing the background the string was drawn on */
     Mask covered;     /* strips under a translucent panel (blend) until what was there is put back */
+    short cov_x0, cov_x1;  /* game x range of the panel(s) covering it */
+    BYTE lead[MAX_STRIPS], tail[MAX_STRIPS];  /* strips not in mask: columns at their left/right edge
+                                                 still on the background (a menu edge inside) */
     BYTE dim;         /* times dimmed (0x5E42E0) since drawn: drawn darker, like the game's glyphs */
     DWORD fx_epoch;   /* panel/dim that last covered or dimmed it */
     WORD *px;         /* copy of the background under the glyph band when recorded (owned) */
@@ -84,6 +87,7 @@ typedef struct {
     WORD color;
     Mask mask;
     BYTE dim;
+    BYTE lead[MAX_STRIPS], tail[MAX_STRIPS];  /* hidden strips: columns still shown at each edge */
     char s[MAX_STR];
 } SnapItem;
 
@@ -204,6 +208,38 @@ static Mask same_strips(const Locked *l, const Item *it)
     return same_strips_pct(l, it, 30);
 }
 
+/* for the strips not in m: how many columns at each edge still show the background (the same
+   30% rule per column), so a menu edge cuts the text where it is and not at the strip boundary.
+   Returns 1 if any strip keeps some columns. */
+static int edge_cols(const Locked *l, const Item *it, Mask m, BYTE *lead, BYTE *tail)
+{
+    int k, n = strips(it), r, c, bh = BAND_H(it), by = it->y + BAND_TOP(it), any = 0;
+    for (k = 0; k < n; k++) {
+        int c0 = k * STRIP, c1 = min(c0 + STRIP, it->w), ld = 0, tl = 0, run = 1;
+        lead[k] = tail[k] = 0;
+        if ((m >> k & 1) || !it->px)
+            continue;
+        for (c = c0; c < c1; c++) {
+            int changed = 0;
+            for (r = 0; r < bh; r++)
+                changed += back_px(l, it->x + c, by + r) != it->px[r * it->w + c];
+            if (changed * 100 <= bh * 30) {
+                ld += run;
+                tl++;
+            } else {
+                run = 0;
+                tl = 0;
+            }
+        }
+        if (ld == c1 - c0)
+            continue;  /* no single column changed enough although the strip did: keep it hidden */
+        lead[k] = (BYTE)ld;
+        tail[k] = (BYTE)tl;
+        any |= ld | tl;
+    }
+    return any;
+}
+
 /* the strips of `it` that the range [x, x + w) covers still show the background it was drawn on */
 static int background_kept(const Locked *l, const Item *it, int x, int w)
 {
@@ -247,13 +283,34 @@ static void publish(void)
     EnterCriticalSection(&g_snap_cs);
     for (i = 0; i < MAX_ITEMS; i++) {
         Item *it = &g_items[i];
-        SnapItem *o;
-        if (it->state != 1 || !(it->mask & ~it->covered))
+        SnapItem *o = &g_snap[n];
+        int k, any = 0;
+        if (it->state != 1)
             continue;
-        o = &g_snap[n++];
+        o->mask = it->mask & ~it->covered;
+        for (k = 0; k < strips(it); k++) {
+            /* hidden strip: the columns outside the covering panel / still on their background */
+            int s0 = it->x + k * STRIP, s1 = it->x + min((k + 1) * STRIP, it->w), ld = s1 - s0, tl = s1 - s0;
+            o->lead[k] = o->tail[k] = 0;
+            if (o->mask >> k & 1)
+                continue;
+            if (!(it->mask >> k & 1)) {
+                ld = it->lead[k];
+                tl = it->tail[k];
+            }
+            if (it->covered >> k & 1) {
+                ld = min(ld, max(0, it->cov_x0 - s0));
+                tl = min(tl, max(0, s1 - 1 - it->cov_x1));
+            }
+            o->lead[k] = (BYTE)ld;
+            o->tail[k] = (BYTE)tl;
+            any |= ld | tl;
+        }
+        if (!o->mask && !any)
+            continue;
+        n++;
         o->x = it->x; o->y = it->y; o->w = it->w; o->h = it->h;
         o->font = it->font; o->color = it->color;
-        o->mask = it->mask & ~it->covered;
         o->dim = it->dim;
         memcpy(o->s, it->s, MAX_STR);
     }
@@ -335,6 +392,8 @@ static int on_draw_(DWORD *a)
     take_px(&l, slot);
     slot->mask = all_strips(slot);
     slot->covered = 0;
+    ZeroMemory(slot->lead, sizeof(slot->lead));
+    ZeroMemory(slot->tail, sizeof(slot->tail));
     slot->dim = 0;
     slot->state = 1;
     g_scene_empty = 0;
@@ -357,12 +416,19 @@ static void on_present_(DWORD *a)
     if (lock_back(&l)) {
         for (i = 0; i < MAX_ITEMS; i++) {
             Item *it = &g_items[i];
-            BYTE st;
+            BYTE st, lead[MAX_STRIPS], tail[MAX_STRIPS];
             Mask m;
+            int edges;
             if (!it->state || !overlap(x0, y0, x1 - x0 + 1, y1 - y0 + 1, it->x, it->y, it->w, it->h))
                 continue;
             m = same_strips(&l, it);
-            st = m ? 1 : 2;  /* partly drawn over: show the strips still on their background */
+            edges = edge_cols(&l, it, m, lead, tail);
+            st = m || edges ? 1 : 2;  /* partly drawn over: show the parts still on their background */
+            if (memcmp(lead, it->lead, strips(it)) || memcmp(tail, it->tail, strips(it))) {
+                memcpy(it->lead, lead, sizeof(lead));
+                memcpy(it->tail, tail, sizeof(tail));
+                g_dirty = 1;
+            }
             if (st != it->state || m != it->mask) {
                 if (g_debug)
                     logf("text4k: present %d,%d-%d,%d: %s \"%s\" strips %I64X of %I64X", x0, y0, x1, y1,
@@ -647,6 +713,13 @@ static int __cdecl my_panel(int x0, int y0, int x1, int y1, int flags, int colou
         Item *it = &g_items[i];
         /* the glyph band, not the whole line box: a panel just below a header title leaves it */
         if (it->state && overlap(x0, y0, x1 - x0 + 1, y1 - y0 + 1, it->x, it->y + BAND_TOP(it), it->w, BAND_H(it))) {
+            if (!it->covered) {
+                it->cov_x0 = (short)x0;
+                it->cov_x1 = (short)x1;
+            } else {
+                it->cov_x0 = (short)min(it->cov_x0, x0);
+                it->cov_x1 = (short)max(it->cov_x1, x1);
+            }
             it->covered |= strips_in(it, x0, x1);
             it->fx_epoch = g_blend_epoch;
             g_dirty = 1;
@@ -966,6 +1039,17 @@ static Tex *get_tex(const SnapItem *it, float scale)
     return t;
 }
 
+/* the part [ga, gb) (game x relative to the string) of the string's quad x0..x1 */
+static void run_quad(const SnapItem *it, float sx, float x0, float x1, float y0, float y1, int ga, int gb)
+{
+    float a = ga == 0 ? x0 : (it->x + ga) * sx, b = gb >= it->w ? x1 : (it->x + gb) * sx;
+    float ua = (a - x0) / (x1 - x0), ub = (b - x0) / (x1 - x0);
+    glTexCoord2f_(ua, 0); glVertex2f_(a, y0);
+    glTexCoord2f_(ub, 0); glVertex2f_(b, y0);
+    glTexCoord2f_(ub, 1); glVertex2f_(b, y1);
+    glTexCoord2f_(ua, 1); glVertex2f_(a, y1);
+}
+
 static SnapItem g_draw[MAX_ITEMS];
 static int g_draw_n;
 static LONG g_draw_ver = -1;
@@ -1079,27 +1163,30 @@ static void overlay(void)
         }
         glBegin_(GL_QUADS);
         {
-            /* one quad per run of strips still on their background (the rest was drawn over) */
-            int n = min((it->w + STRIP - 1) / STRIP, MAX_STRIPS), k = 0;
-            while (k < n) {
-                int e;
-                float a, b, ua, ub;
-                if (!(it->mask >> k & 1)) {
-                    k++;
-                    continue;
+            /* one quad per run of columns still on their background (the rest was drawn over):
+               whole strips plus the edge columns of hidden ones; game x relative to it->x */
+            int n = min((it->w + STRIP - 1) / STRIP, MAX_STRIPS), k, p, ga = -1, gb = -1;
+            for (k = 0; k < n; k++) {
+                int s0 = k * STRIP, s1 = min(s0 + STRIP, it->w), pc[2][2], np = 0;
+                if (it->mask >> k & 1) {
+                    pc[np][0] = s0; pc[np++][1] = s1;
+                } else {
+                    if (it->lead[k]) { pc[np][0] = s0; pc[np++][1] = s0 + it->lead[k]; }
+                    if (it->tail[k]) { pc[np][0] = s1 - it->tail[k]; pc[np++][1] = s1; }
                 }
-                for (e = k; e < n && (it->mask >> e & 1); e++)
-                    ;
-                a = k == 0 ? x0 : (it->x + k * STRIP) * sx;
-                b = e == n ? x1 : (it->x + e * STRIP) * sx;
-                ua = (a - x0) / (x1 - x0);
-                ub = (b - x0) / (x1 - x0);
-                glTexCoord2f_(ua, 0); glVertex2f_(a, y0);
-                glTexCoord2f_(ub, 0); glVertex2f_(b, y0);
-                glTexCoord2f_(ub, 1); glVertex2f_(b, y1);
-                glTexCoord2f_(ua, 1); glVertex2f_(a, y1);
-                k = e;
+                for (p = 0; p < np; p++) {
+                    if (ga >= 0 && pc[p][0] <= gb) {
+                        gb = max(gb, pc[p][1]);
+                        continue;
+                    }
+                    if (ga >= 0)
+                        run_quad(it, sx, x0, x1, y0, y1, ga, gb);
+                    ga = pc[p][0];
+                    gb = pc[p][1];
+                }
             }
+            if (ga >= 0)
+                run_quad(it, sx, x0, x1, y0, y1, ga, gb);
         }
         glEnd_();
     }
