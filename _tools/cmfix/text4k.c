@@ -320,6 +320,17 @@ static void publish(void)
     g_dirty = 0;
 }
 
+/* "#hhhh#" switches the colour, as the game parses it (0x5E5060); a lone '#' ("Scout #1") is text */
+static int has_colour_code(const char *s)
+{
+    int i, n = (int)strlen(s);
+    for (i = 0; i + 5 < n; i++)
+        if (s[i] == '#' && s[i + 5] == '#' && isxdigit((BYTE)s[i + 1]) && isxdigit((BYTE)s[i + 2]) &&
+            isxdigit((BYTE)s[i + 3]) && isxdigit((BYTE)s[i + 4]))
+            return 1;
+    return 0;
+}
+
 /* returns 1 when the string was taken over (the game must not draw it) */
 static int on_draw_(DWORD *a)
 {
@@ -328,7 +339,7 @@ static int on_draw_(DWORD *a)
     Item *slot = NULL, *oldest = NULL;
     Locked l;
     InterlockedIncrement(&g_draws);
-    if (!g_overlay_alive || !s || !*s || caret >= 0 || font < 0 || font > 7 || strlen(s) >= MAX_STR || strchr(s, '#'))
+    if (!g_overlay_alive || !s || !*s || caret >= 0 || font < 0 || font > 7 || strlen(s) >= MAX_STR || has_colour_code(s))
         return 0;
     if (FONT_MODE == -1) {
         if (!g_scene_empty)
