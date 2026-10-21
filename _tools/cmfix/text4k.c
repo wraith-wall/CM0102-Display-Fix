@@ -62,6 +62,8 @@ typedef int(__cdecl *TextWidthFn)(int font, const char *s);
 #define MAX_STR   120
 #define STRIP     16        /* the background checksum is kept per vertical strip of 16 game pixels */
 #define MAX_STRIPS 64
+#define ALIGN_LEFT  1
+#define ALIGN_RIGHT 2
 typedef unsigned __int64 Mask;
 
 typedef struct {
@@ -76,6 +78,7 @@ typedef struct {
     BYTE lead[MAX_STRIPS], tail[MAX_STRIPS];  /* strips not in mask: columns at their left/right edge
                                                  still on the background (a menu edge inside) */
     BYTE dim;         /* times dimmed (0x5E42E0) since drawn: drawn darker, like the game's glyphs */
+    BYTE align;       /* a short string the game padded with spaces: ALIGN_LEFT ("2    "), ALIGN_RIGHT ("    3") */
     DWORD fx_epoch;   /* panel/dim that last covered or dimmed it */
     WORD *px;         /* copy of the background under the glyph band when recorded (owned) */
     char s[MAX_STR];
@@ -86,7 +89,7 @@ typedef struct {
     short font;
     WORD color;
     Mask mask;
-    BYTE dim;
+    BYTE dim, align;
     BYTE lead[MAX_STRIPS], tail[MAX_STRIPS];  /* hidden strips: columns still shown at each edge */
     char s[MAX_STR];
 } SnapItem;
@@ -312,12 +315,22 @@ static void publish(void)
         o->x = it->x; o->y = it->y; o->w = it->w; o->h = it->h;
         o->font = it->font; o->color = it->color;
         o->dim = it->dim;
+        o->align = it->align;
         memcpy(o->s, it->s, MAX_STR);
     }
     g_snap_n = n;
     LeaveCriticalSection(&g_snap_cs);
     InterlockedIncrement(&g_snap_ver);
     g_dirty = 0;
+}
+
+/* digits only: a score or a number in a box */
+static int is_number(const char *s)
+{
+    for (; *s; s++)
+        if (*s < '0' || *s > '9')
+            return 0;
+    return 1;
 }
 
 /* "#hhhh#" switches the colour, as the game parses it (0x5E5060); a lone '#' ("Scout #1") is text */
@@ -336,6 +349,8 @@ static int on_draw_(DWORD *a)
 {
     int x = (int)a[0], y = (int)a[1], font = (short)a[2], caret = (int)a[5], w, h, i, alnum = 0;
     const char *s = (const char *)a[4];
+    char core[MAX_STR];
+    int align = 0;
     Item *slot = NULL, *oldest = NULL;
     Locked l;
     InterlockedIncrement(&g_draws);
@@ -350,6 +365,37 @@ static int on_draw_(DWORD *a)
         alnum |= IsCharAlphaNumericA(s[i]);
     if (font == 0 && !alnum)
         return 0;
+    {
+        /* the game aligns with spaces (a score is "2    ", ":", "    3"; menu items are indented):
+           Eras spaces are not as wide as the game's, so record only the text between them, at the
+           x where the game puts it */
+        int b = (int)strlen(s), lead = 0;
+        align = 0;
+        while (s[lead] == ' ' || s[lead] == '|')
+            lead++;
+        while (b > lead && (s[b - 1] == ' ' || s[b - 1] == '|'))
+            b--;
+        if (b > lead && (lead || s[b])) {
+            int full = ((TextWidthFn)T_WIDTH)(font, s), padx = 0, trail = s[b] != 0;
+            if (lead) {
+                memcpy(core, s, lead);
+                core[lead] = 0;
+                padx = ((TextWidthFn)T_WIDTH)(font, core);
+            }
+            memcpy(core, s + lead, b - lead);
+            core[b - lead] = 0;
+            s = core;
+            /* the game's widths do not add up ("    3" is wider than "    " + "3"): text after
+               the spaces ends where the whole string ends, as the game draws it */
+            if (lead && !trail)
+                x += full - ((TextWidthFn)T_WIDTH)(font, s);
+            else
+                x += padx;
+            /* a score digit: at the start of "2    ", at the end of "    3" */
+            if (b - lead <= 3 && !(lead && trail) && is_number(s))
+                align = lead ? ALIGN_RIGHT : ALIGN_LEFT;
+        }
+    }
     w = ((TextWidthFn)T_WIDTH)(font, s);
     h = line_height(font);
     if (w <= 0 || h <= 0)
@@ -406,6 +452,7 @@ static int on_draw_(DWORD *a)
     ZeroMemory(slot->lead, sizeof(slot->lead));
     ZeroMemory(slot->tail, sizeof(slot->tail));
     slot->dim = 0;
+    slot->align = (BYTE)align;
     slot->state = 1;
     g_scene_empty = 0;
     lstrcpynA(slot->s, s, MAX_STR);
@@ -1155,14 +1202,17 @@ static void overlay(void)
         float x0, y0, x1, y1, fit, gw = it->w * sx;
         /* keep the game's layout: never wider than the game's own string width. Except very short
            strings (scores, numbers in boxes): the game's narrow "1" squeezed a whole Eras "1" to a
-           sliver, so these keep their own width and are centred on the game's box instead */
+           sliver, so these keep their own width, anchored on the side the game put them (a score
+           is "2    ", ":", "    3": the outer edges of the digits stay put) or else centred */
         fit = t->ink_w > gw ? gw / t->ink_w : 1.0f;
-        if (fit < 1.0f && strlen(it->s) <= 3) {
+        if (strlen(it->s) <= 3)
             fit = 1.0f;
-            x0 = (it->x + it->w * 0.5f) * sx - t->ink_w * 0.5f - 1.0f;
-        } else {
+        if (it->align == ALIGN_RIGHT)
+            x0 = (it->x + it->w) * sx - t->ink_w * fit - fit;
+        else if (it->align == ALIGN_LEFT || t->ink_w <= gw || !is_number(it->s))
             x0 = it->x * sx - fit;
-        }
+        else
+            x0 = (it->x + it->w * 0.5f) * sx - t->ink_w * 0.5f - 1.0f;
         x1 = x0 + t->tw * fit;
         y0 = (it->y + g_y_off) * sy + (it->h * sy - t->th) * 0.5f;
         y1 = y0 + t->th;
