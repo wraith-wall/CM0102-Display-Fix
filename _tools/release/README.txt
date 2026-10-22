@@ -52,8 +52,7 @@ hooks. Resolution patches (1280x800, 1024x576, ...) change the game's frame
 size: crisp text then turns itself off. Other combinations are untested.
 
 KNOWN LIMITATIONS
-- Some text stays low-res: input fields while you type and text with
-  embedded colours.
+- Text with embedded colours stays low-res.
 - Big titles use Eras instead of the game's HandelGothic.
 - Behind modal dialogs (e.g. Game Settings) the menu text underneath is hidden
   instead of shown dimmed.

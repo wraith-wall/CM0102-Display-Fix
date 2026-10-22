@@ -15,7 +15,9 @@
  * strings along (see my_grab); a put removes the strings entirely under it. A new string removes
  * older strings it overlaps.
  *
- * Left to the game (drawn low-res as before): strings with a caret (input fields), strings
+ * Strings with a caret (input fields) are redrawn too, the caret by the overlay after the
+ * caret-th character (the game's own caret sits where its glyphs end); text4k_input=0 leaves them
+ * to the game. Left to the game (drawn low-res as before): strings
  * with #hhhh# colour codes, font 0 strings without letters/digits other than the arrow icons
  * (those are drawn with the game's own Data\symbol.ttf), and every
  * string while the "Traditional" fonts (bitmap .fnt, Arial) are selected: only "Futuristic"
@@ -80,6 +82,7 @@ typedef struct {
                                                  still on the background (a menu edge inside) */
     BYTE dim;         /* times dimmed (0x5E42E0) since drawn: drawn darker, like the game's glyphs */
     BYTE align;       /* a short string the game padded with spaces: ALIGN_LEFT ("2    "), ALIGN_RIGHT ("    3") */
+    short caret;      /* input field: caret after this many characters, -1 none */
     DWORD fx_epoch;   /* panel/dim that last covered or dimmed it */
     WORD *px;         /* copy of the background under the glyph band when recorded (owned) */
     char s[MAX_STR];
@@ -91,6 +94,7 @@ typedef struct {
     WORD color;
     Mask mask;
     BYTE dim, align;
+    short caret;
     BYTE lead[MAX_STRIPS], tail[MAX_STRIPS];  /* hidden strips: columns still shown at each edge */
     char s[MAX_STR];
 } SnapItem;
@@ -120,6 +124,7 @@ static void hook_time(LONGLONG t0)
         InterlockedExchangeAdd(&g_hook_us, (LONG)((qpc() - t0) * 1000000 / g_qpf.QuadPart));
 }
 static int g_debug;
+static int g_input = 1;  /* text4k_input: redraw input fields (strings with a caret) */
 static DWORD g_blend_epoch;
 static volatile LONG g_probe_n, g_probe_armed;  /* debug probe, see probe_install */
 static char g_probe_flag[MAX_PATH];
@@ -317,6 +322,7 @@ static void publish(void)
         o->font = it->font; o->color = it->color;
         o->dim = it->dim;
         o->align = it->align;
+        o->caret = it->caret;
         memcpy(o->s, it->s, MAX_STR);
     }
     g_snap_n = n;
@@ -375,7 +381,7 @@ static int on_draw_(DWORD *a)
     Item *slot = NULL, *oldest = NULL;
     Locked l;
     InterlockedIncrement(&g_draws);
-    if (!g_overlay_alive || !s || !*s || caret >= 0 || font < 0 || font > 7 || strlen(s) >= MAX_STR || has_colour_code(s))
+    if (!g_overlay_alive || !s || !*s || (caret >= 0 && !g_input) || font < 0 || font > 7 || strlen(s) >= MAX_STR || has_colour_code(s))
         return 0;
     if (FONT_MODE == -1) {
         if (!g_scene_empty)
@@ -386,7 +392,7 @@ static int on_draw_(DWORD *a)
         alnum |= IsCharAlphaNumericA(s[i]);
     if (font == 0 && !alnum && !(g_symbol_ok && is_symbol(font, s)))
         return 0;
-    {
+    if (caret < 0) {
         /* the game aligns with spaces (a score is "2    ", ":", "    3"; menu items are indented):
            Eras spaces are not as wide as the game's, so record only the text between them, at the
            x where the game puts it */
@@ -474,6 +480,7 @@ static int on_draw_(DWORD *a)
     ZeroMemory(slot->tail, sizeof(slot->tail));
     slot->dim = 0;
     slot->align = (BYTE)align;
+    slot->caret = (short)(caret < 0 ? -1 : min(caret, (int)strlen(s)));  /* input text is not trimmed */
     slot->state = 1;
     g_scene_empty = 0;
     lstrcpynA(slot->s, s, MAX_STR);
@@ -481,7 +488,8 @@ static int on_draw_(DWORD *a)
     g_dirty = 1;
     InterlockedIncrement(&g_kept);
     if (g_debug)
-        logf("text4k: draw \"%s\" %d,%d %dx%d font %d color %04X gen %lu", s, x, y, w, h, font, (unsigned)(WORD)a[3], g_gen);
+        logf("text4k: draw \"%s\" %d,%d %dx%d font %d color %04X caret %d gen %lu", s, x, y, w, h, font, (unsigned)(WORD)a[3],
+             caret, g_gen);
     return 1;
 }
 
@@ -1015,6 +1023,7 @@ typedef struct {
     GLuint tex;
     int tw, th;       /* texture size = GDI cell */
     int ink_w;        /* advance width of the string */
+    short adv[MAX_STR];  /* advance width of the first i + 1 characters (the caret position) */
     DWORD last;       /* frame last used */
 } Tex;
 
@@ -1079,7 +1088,12 @@ static Tex *get_tex(const SnapItem *it, float scale)
                     ANTIALIASED_QUALITY, DEFAULT_PITCH, sym ? SYMBOL_FACE : face_for(it->font));
     of = SelectObject(g_dc, f);
     GetTextMetricsA(g_dc, &tm);
-    GetTextExtentPoint32W(g_dc, ws, n, &sz);
+    {
+        int dx[MAX_STR];
+        GetTextExtentExPointW(g_dc, ws, n, 0, NULL, dx, &sz);
+        for (i = 0; i < n; i++)
+            t->adv[i] = (short)dx[i];
+    }
     t->tw = sz.cx + 2;
     t->th = tm.tmHeight;
     t->ink_w = sz.cx;
@@ -1275,6 +1289,20 @@ static void overlay(void)
                 run_quad(it, sx, x0, x1, y0, y1, ga, gb);
         }
         glEnd_();
+        if (it->caret >= 0) {
+            /* the caret: a line over the game's line cell, as the game draws it, after the
+               caret-th character of this text; not where the game hid the text */
+            float cx = x0 + (1 + (it->caret > 0 ? t->adv[it->caret - 1] : 0)) * fit, cw = max(1.0f, (float)(int)(sx + 0.5f));
+            int gc = (int)(cx / sx) - it->x, k = min(max(gc, 0), it->w - 1) / STRIP;
+            if (it->mask >> k & 1) {
+                glDisable_(GL_TEXTURE_2D);
+                glBegin_(GL_QUADS);
+                glVertex2f_(cx, it->y * sy); glVertex2f_(cx + cw, it->y * sy);
+                glVertex2f_(cx + cw, (it->y + it->h) * sy); glVertex2f_(cx, (it->y + it->h) * sy);
+                glEnd_();
+                glEnable_(GL_TEXTURE_2D);
+            }
+        }
     }
 
     glMatrixMode_(GL_TEXTURE); glPopMatrix_();
@@ -1403,6 +1431,7 @@ int text4k_install(void)
     g_em_k = cfg_float("TEXT4K_EM", g_em_k);
     g_y_off = cfg_float("TEXT4K_YOFF", g_y_off);
     g_debug = cfg_float("TEXT4K_DEBUG", 0) != 0;
+    g_input = cfg_float("TEXT4K_INPUT", 1) != 0;
     if (!font_installed(g_face_small)) {
         logf("text4k: font \"%s\" is not installed (TrueType); off", g_face_small);
         return 0;
@@ -1440,6 +1469,7 @@ int text4k_install(void)
     patch_jmp5(T_PUT, my_put, 5);
     patch_jmp5(T_DIM, my_dim, 5);
     patch_jmp5(T_PANEL, my_panel, 5);
-    logf("text4k: on (fonts \"%s\" / \"%s\", em x%.2f, y %+.1f)", g_face_small, g_face_large, g_em_k, g_y_off);
+    logf("text4k: on (fonts \"%s\" / \"%s\", em x%.2f, y %+.1f, input fields %s)", g_face_small, g_face_large, g_em_k,
+         g_y_off, g_input ? "on" : "off");
     return 1;
 }
